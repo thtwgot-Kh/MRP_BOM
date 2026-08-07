@@ -1,0 +1,176 @@
+<!doctype html>
+<html lang="th">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>ระบบบันทึก BOM</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>📋</text></svg>" />
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Sarabun:wght@400;500;600;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+<div class="app-shell">
+  <header class="topbar">
+    <div class="topbar-brand">
+      <span class="brand-icon">📋</span>
+      <div>
+        <div class="brand-title">ระบบบันทึก BOM</div>
+        <div class="brand-sub">BOM Data Entry</div>
+      </div>
+    </div>
+    <nav class="topnav" id="topnav">
+      <button class="nav-btn is-active" data-view="new">สร้าง BOM ใหม่</button>
+      <button class="nav-btn" data-view="history">ประวัติการบันทึก</button>
+      <button class="nav-btn" data-view="settings">การเชื่อมต่อ</button>
+    </nav>
+    <div class="topbar-status" id="connStatus">
+      <span class="status-dot" id="statusDot"></span>
+      <span id="statusText">ยังไม่เชื่อมต่อ</span>
+    </div>
+  </header>
+
+  <main class="content">
+
+    <!-- ===== NEW BOM VIEW ===== -->
+    <section id="view-new" class="view is-active">
+
+      <div class="card">
+        <h2 class="card-title">1. รหัสสินค้า (ITEM)</h2>
+        <p class="card-hint">ประกอบรหัสจาก 3 ส่วน: รุ่นสินค้า + รหัส Packaging + เฉดสี — พิมพ์เพื่อค้นหา หรือเพิ่มรายการใหม่ได้ทันที</p>
+        <div class="item-builder">
+          <div class="field">
+            <label>รุ่นสินค้า (Base Model)</label>
+            <div id="cb-baseModel" class="combobox-mount"></div>
+          </div>
+          <div class="field field-narrow">
+            <label>Packaging</label>
+            <div id="cb-packaging" class="combobox-mount"></div>
+          </div>
+          <div class="field field-narrow">
+            <label>เฉดสี (Color Set)</label>
+            <div id="cb-color" class="combobox-mount"></div>
+          </div>
+        </div>
+        <div class="item-preview">
+          <span class="item-preview-label">รหัส ITEM ที่จะบันทึก:</span>
+          <code id="itemPreview">—</code>
+          <label class="manual-toggle">
+            <input type="checkbox" id="itemManualToggle" />
+            แก้ไขรหัสเอง
+          </label>
+          <input type="text" id="itemManualInput" class="item-manual-input" placeholder="พิมพ์รหัส ITEM แบบเต็ม" disabled />
+        </div>
+        <button class="btn btn-secondary" id="loadRecipeBtn" disabled>
+          โหลดสูตรวัตถุดิบจากระบบเดิม (ถ้ามี)
+        </button>
+        <span class="hint-inline" id="recipeHint"></span>
+      </div>
+
+      <div class="card">
+        <h2 class="card-title">2. ข้อมูลคำสั่งผลิต</h2>
+        <div class="grid-form">
+          <div class="field">
+            <label>ลูกค้า / Customer</label>
+            <input type="text" id="f-customer" placeholder="เช่น First (เฟริส์ท)" />
+          </div>
+          <div class="field">
+            <label>เลขที่คำสั่งซื้อ / PI</label>
+            <input type="text" id="f-poref" placeholder="เช่น 260701-26030" />
+          </div>
+          <div class="field">
+            <label>จำนวนสั่ง FG</label>
+            <input type="number" id="f-orderQty" min="0" step="1" placeholder="0" />
+          </div>
+          <div class="field">
+            <label>วันที่สั่งผลิต</label>
+            <input type="date" id="f-orderDate" />
+          </div>
+          <div class="field">
+            <label>กำหนดส่งมอบ</label>
+            <input type="date" id="f-dueDate" />
+          </div>
+          <div class="field field-wide">
+            <label>หมายเหตุ</label>
+            <input type="text" id="f-remarks" placeholder="หมายเหตุเพิ่มเติม (ถ้ามี)" />
+          </div>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-title-row">
+          <h2 class="card-title">3. รายการวัตถุดิบ (BOM Lines)</h2>
+          <button class="btn btn-primary btn-sm" id="addLineBtn">+ เพิ่มรายการ</button>
+        </div>
+        <div class="table-wrap">
+          <table class="bom-table" id="bomTable">
+            <thead>
+              <tr>
+                <th style="width:26%">วัตถุดิบ</th>
+                <th>แผนก</th>
+                <th>จำนวนใช้ : 1 FG</th>
+                <th>หน่วย</th>
+                <th>คงคลัง</th>
+                <th>ต้องเบิก/สั่งซื้อ</th>
+                <th>หมายเหตุ</th>
+                <th></th>
+              </tr>
+            </thead>
+            <tbody id="bomTableBody"></tbody>
+          </table>
+        </div>
+        <p class="empty-hint" id="bomEmptyHint">ยังไม่มีรายการวัตถุดิบ — กด "เพิ่มรายการ" หรือ "โหลดสูตรจากระบบเดิม"</p>
+      </div>
+
+      <div class="save-bar">
+        <div class="save-bar-msg" id="saveMsg"></div>
+        <button class="btn btn-primary btn-lg" id="saveBtn">บันทึกลง Google Sheet</button>
+      </div>
+    </section>
+
+    <!-- ===== HISTORY VIEW ===== -->
+    <section id="view-history" class="view">
+      <div class="card">
+        <div class="card-title-row">
+          <h2 class="card-title">ประวัติการบันทึก BOM</h2>
+          <button class="btn btn-secondary btn-sm" id="refreshHistoryBtn">รีเฟรช</button>
+        </div>
+        <input type="text" id="historySearch" class="search-input" placeholder="ค้นหาด้วยรหัส ITEM, ลูกค้า, เลข PO..." />
+        <div id="historyList" class="history-list"></div>
+      </div>
+    </section>
+
+    <!-- ===== SETTINGS VIEW ===== -->
+    <section id="view-settings" class="view">
+      <div class="card">
+        <h2 class="card-title">การเชื่อมต่อ Google Sheet</h2>
+        <p class="card-hint">
+          วางลิงก์ Web App URL ที่ได้จากการ Deploy Google Apps Script (ดูขั้นตอนใน README.md)
+          ระบบจะบันทึกไว้ในเบราว์เซอร์นี้เท่านั้น
+        </p>
+        <div class="field field-wide">
+          <label>Apps Script Web App URL</label>
+          <input type="text" id="f-scriptUrl" placeholder="https://script.google.com/macros/s/XXXXXXXX/exec" />
+        </div>
+        <button class="btn btn-primary" id="saveUrlBtn">บันทึกและเชื่อมต่อ</button>
+        <span class="hint-inline" id="settingsHint"></span>
+      </div>
+      <div class="card">
+        <h2 class="card-title">ผู้บันทึก</h2>
+        <p class="card-hint">ชื่อนี้จะถูกบันทึกไว้ในคอลัมน์ CREATED_BY ของทุกรายการที่คุณบันทึก</p>
+        <div class="field field-wide">
+          <label>ชื่อผู้บันทึก</label>
+          <input type="text" id="f-createdBy" placeholder="เช่น คุณสมชาย" />
+        </div>
+        <button class="btn btn-secondary" id="saveNameBtn">บันทึกชื่อ</button>
+      </div>
+    </section>
+
+  </main>
+</div>
+
+<div id="toast" class="toast"></div>
+
+<script src="app.js"></script>
+</body>
+</html>
