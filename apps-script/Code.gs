@@ -2,9 +2,18 @@
  * BOM Data Entry — Google Apps Script backend.
  *
  * Bind this script to the target Google Sheet (Extensions > Apps Script),
- * add SeedData.gs alongside it, run initializeSheet() once, then deploy as
- * a Web App ("Execute as: Me", "Who has access: Anyone"). See README.md.
+ * paste this whole file in as Code.gs, run initializeSheet() once (creates
+ * the tabs), then run resyncMasterData() to pull the reference data
+ * (BOM_Master / Materials_Catalog / FG_Base_Items / Packaging_Codes /
+ * Color_Shades) from the JSON files in this repo's data/ folder. Re-run
+ * resyncMasterData() any time the repo's data/*.json is updated — it never
+ * touches BOM_Orders / BOM_Order_Lines. Deploy as a Web App ("Execute as:
+ * Me", "Who has access: Anyone"). See README.md.
  */
+
+// Where the authoritative reference data lives. Update the branch name here
+// if the repo's default branch ever changes.
+var RAW_BASE_URL = 'https://raw.githubusercontent.com/thtwgot-Kh/MRP_BOM/claude/bom-data-entry-website-w8av10/data/';
 
 var SHEETS = {
   BOM_MASTER: 'BOM_Master',
@@ -29,6 +38,12 @@ var HEADERS = {
   BOM_Order_Lines: ['ORDER_ID','LINE_NO','MATERIAL_CODE','MATERIAL_NAME','DEPT','QTY_PER_FG',
     'UNIT','STOCK_QTY','REQUIRED_QTY','REMARKS']
 };
+
+// bom_master.json rows are objects keyed like this (see scripts/extract.py).
+var RECIPE_FIELDS = ['item','code','dept','formula','seColor','seLength','hole','outerSE','outerRB',
+  'name','deptMaker','qtyPerSet','cutLength','cutUnit','piecesPerRB','piecesUnit',
+  'qtyPer1GR','qtyPer1GRUnit','rbCountUnit','rbWeight'];
+var CATALOG_FIELDS = ['code','name','dept','unit','usageCount'];
 
 function getSS_() {
   return SpreadsheetApp.getActiveSpreadsheet();
@@ -56,54 +71,91 @@ function getOrCreateSheet_(name) {
 function onOpen() {
   SpreadsheetApp.getUi()
     .createMenu('BOM App')
-    .addItem('Initialize / Re-seed sheets', 'initializeSheet')
-    .addItem('Add missing base items from SeedData', 'mergeMissingBaseItems')
+    .addItem('1. Initialize sheets (create tabs)', 'initializeSheet')
+    .addItem('2. Sync master data from GitHub (replace)', 'resyncMasterData')
     .addToUi();
 }
 
-/**
- * One-time (idempotent) setup: creates all tabs with headers, and seeds
- * BOM_Master / Materials_Catalog / FG_Base_Items / Packaging_Codes /
- * Color_Shades from SeedData.gs if those tabs are currently empty.
- */
+/** Creates all tabs with headers. Safe to re-run any time — never touches data. */
 function initializeSheet() {
   Object.keys(HEADERS).forEach(getOrCreateSheet_);
-
-  seedIfEmpty_(SHEETS.BOM_MASTER, SEED_BOM_MASTER);
-  seedIfEmpty_(SHEETS.MATERIALS, SEED_MATERIALS_CATALOG);
-  seedIfEmpty_(SHEETS.BASE_ITEMS, SEED_FG_BASE_ITEMS.map(function (n) { return [n]; }));
-
-  // Packaging / color code tables: seed the known codes with a blank
-  // description column that the user fills in later.
-  seedIfEmpty_(SHEETS.PACKAGING, SEED_PACKAGING_CODES.map(function (c) { return [c, '']; }));
-  seedIfEmpty_(SHEETS.COLORS, SEED_COLOR_SHADES.map(function (c) { return [c, '']; }));
-
   return 'OK';
 }
 
-function seedIfEmpty_(sheetName, rows) {
+function fetchJson_(name) {
+  var res = UrlFetchApp.fetch(RAW_BASE_URL + name + '.json', { muteHttpExceptions: true });
+  if (res.getResponseCode() !== 200) {
+    throw new Error('Failed to fetch ' + name + '.json: HTTP ' + res.getResponseCode());
+  }
+  return JSON.parse(res.getContentText());
+}
+
+function clearAndWrite_(sheetName, rows) {
   var sh = getOrCreateSheet_(sheetName);
-  if (sh.getLastRow() > 1 || !rows || !rows.length) return;
-  sh.getRange(2, 1, rows.length, rows[0].length).setValues(rows);
+  var numCols = HEADERS[sheetName].length;
+  if (sh.getLastRow() > 1) {
+    sh.getRange(2, 1, sh.getLastRow() - 1, numCols).clearContent();
+  }
+  if (rows && rows.length) {
+    sh.getRange(2, 1, rows.length, numCols).setValues(rows);
+  }
 }
 
 /**
- * Adds any base model / item codes from SeedData.gs that aren't already in
- * FG_Base_Items yet, without touching existing rows. Safe to re-run any
- * time SeedData.gs is updated with more codes (unlike initializeSheet(),
- * which only seeds a tab the first time it's empty).
+ * Pulls BOM_Master / Materials_Catalog / FG_Base_Items / Packaging_Codes /
+ * Color_Shades from this repo's data/*.json (GitHub raw) and refreshes the
+ * sheet:
+ *  - BOM_Master, Materials_Catalog, FG_Base_Items are fully REPLACED —
+ *    data/*.json is the authoritative source, so stale rows from a
+ *    previous import are cleared out rather than merged.
+ *  - Packaging_Codes / Color_Shades only get MISSING codes appended, so any
+ *    descriptions you've already filled in are preserved.
+ *  - BOM_Orders / BOM_Order_Lines (your saved production orders) are never
+ *    touched.
+ * Safe to re-run any time data/*.json is updated in the repo.
  */
-function mergeMissingBaseItems() {
-  var sh = getOrCreateSheet_(SHEETS.BASE_ITEMS);
-  var existing = sheetToObjects_(SHEETS.BASE_ITEMS).map(function (r) { return r.NAME; });
-  var existingSet = {};
-  existing.forEach(function (n) { existingSet[n] = true; });
+function resyncMasterData() {
+  Object.keys(HEADERS).forEach(getOrCreateSheet_);
 
-  var missing = SEED_FG_BASE_ITEMS.filter(function (n) { return !existingSet[n]; });
+  var bomMaster = fetchJson_('bom_master');
+  var bomMasterRows = bomMaster.map(function (r) {
+    return RECIPE_FIELDS.map(function (k) { return r[k] == null ? '' : r[k]; });
+  });
+  clearAndWrite_(SHEETS.BOM_MASTER, bomMasterRows);
+
+  var catalog = fetchJson_('materials_catalog');
+  var catalogRows = catalog.map(function (r) {
+    return CATALOG_FIELDS.map(function (k) { return r[k] == null ? '' : r[k]; });
+  });
+  clearAndWrite_(SHEETS.MATERIALS, catalogRows);
+
+  // FG_Base_Items = every unique legacy ITEM code (so "load recipe" and
+  // reusing an exact existing item both work) unioned with the mined
+  // "root model name" list (for composing brand-new item codes).
+  var minedBaseItems = fetchJson_('fg_base_items');
+  var itemSet = {};
+  bomMaster.forEach(function (r) { if (r.item) itemSet[r.item] = true; });
+  minedBaseItems.forEach(function (n) { itemSet[n] = true; });
+  var allBaseItems = Object.keys(itemSet).sort();
+  clearAndWrite_(SHEETS.BASE_ITEMS, allBaseItems.map(function (n) { return [n]; }));
+
+  mergeMissingCodes_(SHEETS.PACKAGING, fetchJson_('packaging_codes'));
+  mergeMissingCodes_(SHEETS.COLORS, fetchJson_('color_shades'));
+
+  return 'Synced: ' + bomMasterRows.length + ' recipe rows, ' + catalogRows.length +
+    ' materials, ' + allBaseItems.length + ' base items.';
+}
+
+function mergeMissingCodes_(sheetName, codes) {
+  var sh = getOrCreateSheet_(sheetName);
+  var existing = sheetToObjects_(sheetName).map(function (r) { return String(r.CODE); });
+  var existingSet = {};
+  existing.forEach(function (c) { existingSet[c] = true; });
+  var missing = codes.filter(function (c) { return !existingSet[c]; });
   if (missing.length) {
-    sh.getRange(sh.getLastRow() + 1, 1, missing.length, 1).setValues(missing.map(function (n) { return [n]; }));
+    sh.getRange(sh.getLastRow() + 1, 1, missing.length, 2).setValues(
+      missing.map(function (c) { return [c, '']; }));
   }
-  return 'Added ' + missing.length + ' new base item(s), ' + existing.length + ' already present.';
 }
 
 function sheetToObjects_(sheetName) {
@@ -129,14 +181,17 @@ function doGet(e) {
       case 'ping':
         return jsonOut_({ ok: true, time: new Date().toISOString() });
       case 'bootstrap':
+        // BOM_Master is intentionally excluded here (tens of thousands of
+        // rows) — use action=recipe to look up one item's recipe on demand.
         return jsonOut_({
           ok: true,
-          bomMaster: sheetToObjects_(SHEETS.BOM_MASTER),
           materials: sheetToObjects_(SHEETS.MATERIALS),
           baseItems: sheetToObjects_(SHEETS.BASE_ITEMS).map(function (r) { return r.NAME; }),
           packagingCodes: sheetToObjects_(SHEETS.PACKAGING),
           colorShades: sheetToObjects_(SHEETS.COLORS)
         });
+      case 'recipe':
+        return jsonOut_({ ok: true, rows: getRecipeForItem_(e.parameter.item || '') });
       case 'orders':
         return jsonOut_({
           ok: true,
@@ -149,6 +204,12 @@ function doGet(e) {
   } catch (err) {
     return jsonOut_({ ok: false, error: String(err) });
   }
+}
+
+function getRecipeForItem_(item) {
+  if (!item) return [];
+  var all = sheetToObjects_(SHEETS.BOM_MASTER);
+  return all.filter(function (r) { return r.ITEM === item; });
 }
 
 /**

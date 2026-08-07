@@ -45,6 +45,7 @@ const Api = {
   },
   ping: () => Api.get('ping'),
   bootstrap: () => Api.get('bootstrap'),
+  recipe: (item) => Api.get('recipe', { item }),
   orders: () => Api.get('orders'),
   saveOrder: (order) => Api.post('saveOrder', { order }),
   addPackagingCode: (code, description) => Api.post('addPackagingCode', { code, description }),
@@ -205,8 +206,7 @@ class Combobox {
 /* ============================== App State ============================== */
 
 const App = {
-  data: { bomMaster: [], materials: [], baseItems: [], packagingCodes: [], colorShades: [] },
-  bomMasterByItem: new Map(),
+  data: { materials: [], baseItems: [], packagingCodes: [], colorShades: [] },
   lines: [], // current BOM lines being edited: {rowId, materialCode, materialName, dept, unit, qtyPerFg, stockQty, remarks}
   itemBuild: { baseModel: '', packaging: '', color: '' },
   rowSeq: 1,
@@ -264,18 +264,10 @@ async function connect() {
 async function loadBootstrap() {
   const res = await Api.bootstrap();
   if (!res.ok) { toast('โหลดข้อมูลไม่สำเร็จ: ' + res.error, 'error'); return; }
-  App.data.bomMaster = res.bomMaster || [];
   App.data.materials = res.materials || [];
   App.data.baseItems = res.baseItems || [];
   App.data.packagingCodes = res.packagingCodes || [];
   App.data.colorShades = res.colorShades || [];
-
-  App.bomMasterByItem = new Map();
-  App.data.bomMaster.forEach((r) => {
-    const key = r.ITEM;
-    if (!App.bomMasterByItem.has(key)) App.bomMasterByItem.set(key, []);
-    App.bomMasterByItem.get(key).push(r);
-  });
 
   refreshBaseModelItems();
   refreshPackagingItems();
@@ -400,11 +392,28 @@ function initItemBuilder() {
   document.getElementById('loadRecipeBtn').addEventListener('click', loadRecipeFromMaster);
 }
 
-function loadRecipeFromMaster() {
+async function loadRecipeFromMaster() {
   const item = currentItemCode();
   const hint = document.getElementById('recipeHint');
-  let rows = App.bomMasterByItem.get(item);
-  if (!rows) rows = App.bomMasterByItem.get(App.itemBuild.baseModel);
+  const btn = document.getElementById('loadRecipeBtn');
+
+  btn.disabled = true;
+  hint.textContent = 'กำลังค้นหาสูตรวัตถุดิบเดิม...';
+  let rows;
+  try {
+    let res = await Api.recipe(item);
+    rows = res.ok ? res.rows : [];
+    if ((!rows || !rows.length) && App.itemBuild.baseModel && App.itemBuild.baseModel !== item) {
+      res = await Api.recipe(App.itemBuild.baseModel);
+      rows = res.ok ? res.rows : [];
+    }
+  } catch (err) {
+    hint.textContent = 'ค้นหาสูตรวัตถุดิบไม่สำเร็จ: ' + err.message;
+    btn.disabled = false;
+    return;
+  }
+  btn.disabled = false;
+
   if (!rows || !rows.length) {
     hint.textContent = 'ไม่พบสูตรวัตถุดิบเดิมสำหรับรหัสนี้ในระบบเก่า — เพิ่มรายการเองได้ด้านล่าง';
     return;
