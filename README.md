@@ -15,7 +15,8 @@
 apps-script/   Google Apps Script backend (ผูกกับ Google Sheet)
   Code.gs        API หลัก (doGet/doPost) + ฟังก์ชันตั้งค่าเริ่มต้น
   SeedData.gs    ข้อมูลตั้งต้นที่นำเข้าจากไฟล์ MRP เดิม (สร้างอัตโนมัติ, ไม่ควรแก้มือ)
-web/           เว็บแอป (static, ไม่ต้อง build) — index.html, app.js, styles.css
+docs/          เว็บแอป (static, ไม่ต้อง build) — index.html, app.js, styles.css
+               (ชื่อโฟลเดอร์ต้องเป็น docs/ เพราะ GitHub Pages รองรับเฉพาะ / หรือ /docs)
 data/          ไฟล์ JSON ข้อมูลที่ดึงออกมาจากไฟล์ Excel เดิม (ไว้อ้างอิง/ตรวจสอบ)
 scripts/       สคริปต์ที่ใช้แปลงข้อมูลจาก Excel → JSON → SeedData.gs
 ```
@@ -43,11 +44,11 @@ scripts/       สคริปต์ที่ใช้แปลงข้อม�
 
 ## ขั้นตอนที่ 2 — เปิดใช้งานเว็บแอป
 
-โฟลเดอร์ `web/` เป็นเว็บไซต์ static ธรรมดา (HTML/CSS/JS) ไม่ต้อง build ไม่ต้องมีเซิร์ฟเวอร์พิเศษ เลือกวิธีใดวิธีหนึ่ง:
+โฟลเดอร์ `docs/` เป็นเว็บไซต์ static ธรรมดา (HTML/CSS/JS) ไม่ต้อง build ไม่ต้องมีเซิร์ฟเวอร์พิเศษ เลือกวิธีใดวิธีหนึ่ง:
 
-- **GitHub Pages** (แนะนำ ฟรี): ใน repo settings → Pages → Deploy from branch → เลือก branch นี้และโฟลเดอร์ `/web`
-- **เปิดจากเครื่อง**: ดับเบิลคลิกไฟล์ `web/index.html` ได้เลย (บางเบราว์เซอร์อาจบล็อก fetch จากไฟล์ local — ถ้าเจอปัญหาให้รันเซิร์ฟเวอร์เล็ก ๆ เช่น `npx http-server web`)
-- **Netlify / Vercel**: ลาก-วางโฟลเดอร์ `web/` เพื่อ deploy ได้ทันที
+- **GitHub Pages** (แนะนำ ฟรี): ใน repo settings → Pages → Deploy from branch → เลือก branch นี้และโฟลเดอร์ `/docs`
+- **เปิดจากเครื่อง**: ดับเบิลคลิกไฟล์ `docs/index.html` ได้เลย (บางเบราว์เซอร์อาจบล็อก fetch จากไฟล์ local — ถ้าเจอปัญหาให้รันเซิร์ฟเวอร์เล็ก ๆ เช่น `npx http-server docs`)
+- **Netlify / Vercel**: ลาก-วางโฟลเดอร์ `docs/` เพื่อ deploy ได้ทันที
 
 เมื่อเปิดเว็บครั้งแรก ระบบจะพาไปหน้า **"การเชื่อมต่อ"** อัตโนมัติ:
 
