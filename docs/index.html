@@ -36,51 +36,16 @@
     <section id="view-new" class="view is-active">
 
       <div class="card">
-        <h2 class="card-title">1. รหัสสินค้า (ITEM)</h2>
-        <p class="card-hint">ประกอบรหัสจาก 3 ส่วน: รุ่นสินค้า + รหัส Packaging + เฉดสี — พิมพ์เพื่อค้นหา หรือเพิ่มรายการใหม่ได้ทันที</p>
-        <div class="item-builder">
-          <div class="field">
-            <label>รุ่นสินค้า (Base Model)</label>
-            <div id="cb-baseModel" class="combobox-mount"></div>
-          </div>
-          <div class="field field-narrow">
-            <label>Packaging</label>
-            <div id="cb-packaging" class="combobox-mount"></div>
-          </div>
-          <div class="field field-narrow">
-            <label>เฉดสี (Color Set)</label>
-            <div id="cb-color" class="combobox-mount"></div>
-          </div>
-        </div>
-        <div class="item-preview">
-          <span class="item-preview-label">รหัส ITEM ที่จะบันทึก:</span>
-          <code id="itemPreview">—</code>
-          <label class="manual-toggle">
-            <input type="checkbox" id="itemManualToggle" />
-            แก้ไขรหัสเอง
-          </label>
-          <input type="text" id="itemManualInput" class="item-manual-input" placeholder="พิมพ์รหัส ITEM แบบเต็ม" disabled />
-        </div>
-        <button class="btn btn-secondary" id="loadRecipeBtn" disabled>
-          โหลดสูตรวัตถุดิบจากระบบเดิม (ถ้ามี)
-        </button>
-        <span class="hint-inline" id="recipeHint"></span>
-      </div>
-
-      <div class="card">
-        <h2 class="card-title">2. ข้อมูลคำสั่งผลิต</h2>
+        <h2 class="card-title">1. ข้อมูลคำสั่งผลิต</h2>
+        <p class="card-hint">จำนวนที่สั่งย้ายไปกรอกรายตัวสินค้าในหัวข้อ 3 แล้ว (หนึ่งคำสั่งผลิตสั่งได้หลาย Item)</p>
         <div class="grid-form">
           <div class="field">
             <label>ลูกค้า / Customer</label>
-            <input type="text" id="f-customer" placeholder="เช่น First (เฟริส์ท)" />
+            <div id="cb-customer" class="combobox-mount"></div>
           </div>
           <div class="field">
             <label>เลขที่คำสั่งซื้อ / PI</label>
             <input type="text" id="f-poref" placeholder="เช่น 260701-26030" />
-          </div>
-          <div class="field">
-            <label>จำนวนสั่ง FG</label>
-            <input type="number" id="f-orderQty" min="0" step="1" placeholder="0" />
           </div>
           <div class="field">
             <label>วันที่สั่งผลิต</label>
@@ -98,28 +63,61 @@
       </div>
 
       <div class="card">
-        <div class="card-title-row">
-          <h2 class="card-title">3. รายการวัตถุดิบ (BOM Lines)</h2>
-          <button class="btn btn-primary btn-sm" id="addLineBtn">+ เพิ่มรายการ</button>
-        </div>
+        <h2 class="card-title">2. กำหนดเริ่ม–เสร็จของแต่ละแผนก</h2>
+        <p class="card-hint">ระบุวันเริ่มและวันเสร็จของแต่ละแผนกในสายการผลิต — แผนกที่ไม่เกี่ยวข้องกับคำสั่งผลิตนี้เว้นว่างไว้ได้</p>
         <div class="table-wrap">
-          <table class="bom-table" id="bomTable">
+          <table class="bom-table schedule-table">
             <thead>
               <tr>
-                <th style="width:26%">วัตถุดิบ</th>
-                <th>แผนก</th>
-                <th>จำนวนใช้ : 1 FG</th>
-                <th>หน่วย</th>
-                <th>คงคลัง</th>
-                <th>ต้องเบิก/สั่งซื้อ</th>
-                <th>หมายเหตุ</th>
-                <th></th>
+                <th style="width:22%">แผนก</th>
+                <th>กำหนดเริ่ม</th>
+                <th>กำหนดเสร็จ</th>
               </tr>
             </thead>
-            <tbody id="bomTableBody"></tbody>
+            <tbody id="scheduleBody"></tbody>
           </table>
         </div>
-        <p class="empty-hint" id="bomEmptyHint">ยังไม่มีรายการวัตถุดิบ — กด "เพิ่มรายการ" หรือ "โหลดสูตรจากระบบเดิม"</p>
+      </div>
+
+      <div class="card">
+        <div class="card-title-row">
+          <h2 class="card-title">3. รหัสสินค้า (ITEM)</h2>
+          <div class="title-actions">
+            <button class="btn btn-secondary btn-sm" id="loadAllRecipesBtn">โหลดสูตรวัตถุดิบทุก Item</button>
+            <button class="btn btn-primary btn-sm" id="addItemBtn">+ เพิ่ม Item</button>
+          </div>
+        </div>
+        <p class="card-hint">
+          ประกอบรหัสจาก รุ่นสินค้า + Packaging + เฉดสี แล้วใส่จำนวนที่สั่งต่อท้าย —
+          กด "+ เพิ่ม Item" เพื่อสั่งผลิตหลายตัวในคำสั่งเดียว แล้วกด "โหลดสูตรวัตถุดิบทุก Item" ครั้งเดียวเพื่อดึงสูตรเดิมและคำนวณให้พร้อมกัน
+        </p>
+        <div id="itemList" class="item-list"></div>
+        <p class="hint-inline" id="loadAllHint"></p>
+      </div>
+
+      <div class="card">
+        <div class="card-title-row">
+          <h2 class="card-title">4. สรุปวัตถุดิบรวมทั้งคำสั่งผลิต</h2>
+          <span class="hint-inline" id="summaryHint"></span>
+        </div>
+        <p class="card-hint">รวมความต้องการวัตถุดิบของทุก Item เข้าด้วยกัน (วัตถุดิบรหัสเดียวกันที่ใช้หลาย Item จะถูกบวกรวม)</p>
+        <div class="table-wrap">
+          <table class="bom-table">
+            <thead>
+              <tr>
+                <th style="width:20%">รหัสวัตถุดิบ</th>
+                <th>ชื่อวัตถุดิบ</th>
+                <th>หน่วย</th>
+                <th>ใช้ใน Item</th>
+                <th>รวมต้องใช้</th>
+                <th>รวมคงคลัง</th>
+                <th>รวมต้องเบิก/สั่งซื้อ</th>
+              </tr>
+            </thead>
+            <tbody id="summaryBody"></tbody>
+          </table>
+        </div>
+        <p class="empty-hint" id="summaryEmptyHint">ยังไม่มีรายการวัตถุดิบให้สรุป</p>
       </div>
 
       <div class="save-bar">

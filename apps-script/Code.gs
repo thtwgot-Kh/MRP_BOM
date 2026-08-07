@@ -22,9 +22,26 @@ var SHEETS = {
   PACKAGING: 'Packaging_Codes',
   COLORS: 'Color_Shades',
   ORDERS: 'BOM_Orders',
+  ORDER_ITEMS: 'BOM_Order_Items',
   LINES: 'BOM_Order_Lines'
 };
 
+// Production departments an order is scheduled through. Each one gets a
+// START/END pair of columns on BOM_Orders — keep this in sync with
+// DEPARTMENTS in docs/app.js.
+var DEPARTMENTS = ['RB','GR','PT','BG','PK','ST'];
+
+function scheduleHeaders_() {
+  var out = [];
+  DEPARTMENTS.forEach(function (d) { out.push(d + '_START', d + '_END'); });
+  return out;
+}
+
+// One order can now cover several items, so ITEM/BASE_MODEL/.../ORDER_QTY on
+// BOM_Orders are a roll-up of the order (all item codes joined, total
+// quantity) and the per-item detail lives in BOM_Order_Items. Those legacy
+// columns keep their original positions, and everything new is appended
+// after them, so orders saved by the previous version stay readable.
 var HEADERS = {
   BOM_Master: ['ITEM','CODE','DEPT','FORMULA','SE_COLOR','SE_LENGTH','HOLE','OUTER_SE','OUTER_RB',
     'NAME','DEPT_MAKER','QTY_PER_SET','CUT_LENGTH','CUT_UNIT','PIECES_PER_RB','PIECES_UNIT',
@@ -34,9 +51,11 @@ var HEADERS = {
   Packaging_Codes: ['CODE','DESCRIPTION'],
   Color_Shades: ['CODE','DESCRIPTION'],
   BOM_Orders: ['ORDER_ID','TIMESTAMP','ITEM','BASE_MODEL','PACKAGING_CODE','COLOR_CODE',
-    'CUSTOMER','ORDER_QTY','ORDER_DATE','DUE_DATE','REMARKS','CREATED_BY'],
+    'CUSTOMER','ORDER_QTY','ORDER_DATE','DUE_DATE','REMARKS','CREATED_BY',
+    'PO_REF','ITEM_COUNT'].concat(scheduleHeaders_()),
+  BOM_Order_Items: ['ORDER_ID','ITEM_NO','ITEM','BASE_MODEL','PACKAGING_CODE','COLOR_CODE','ORDER_QTY'],
   BOM_Order_Lines: ['ORDER_ID','LINE_NO','MATERIAL_CODE','MATERIAL_NAME','DEPT','QTY_PER_FG',
-    'UNIT','STOCK_QTY','REQUIRED_QTY','REMARKS']
+    'UNIT','STOCK_QTY','REQUIRED_QTY','REMARKS','ITEM_NO','ITEM']
 };
 
 // bom_master.json rows are objects keyed like this (see scripts/extract.py).
@@ -57,6 +76,11 @@ function getOrCreateSheet_(name) {
   }
   var headers = HEADERS[name];
   if (headers) {
+    // A sheet created before a column was added can be narrower than the
+    // header row we are about to write.
+    if (sh.getMaxColumns() < headers.length) {
+      sh.insertColumnsAfter(sh.getMaxColumns(), headers.length - sh.getMaxColumns());
+    }
     var firstRow = sh.getRange(1, 1, 1, headers.length).getValues()[0];
     var needsHeader = headers.some(function (h, i) { return firstRow[i] !== h; });
     if (needsHeader) {
@@ -196,14 +220,33 @@ function doGet(e) {
         return jsonOut_({
           ok: true,
           orders: sheetToObjects_(SHEETS.ORDERS),
+          items: sheetToObjects_(SHEETS.ORDER_ITEMS),
           lines: sheetToObjects_(SHEETS.LINES)
         });
+      case 'customers':
+        // Powers the customer search box on the order form. Kept separate
+        // from 'orders' so the picker doesn't have to pull every line of
+        // every past order just to learn the names.
+        return jsonOut_({ ok: true, customers: distinctCustomers_() });
       default:
         return jsonOut_({ ok: false, error: 'unknown action: ' + action });
     }
   } catch (err) {
     return jsonOut_({ ok: false, error: String(err) });
   }
+}
+
+function distinctCustomers_() {
+  var sh = getSS_().getSheetByName(SHEETS.ORDERS);
+  if (!sh || sh.getLastRow() < 2) return [];
+  var col = HEADERS.BOM_Orders.indexOf('CUSTOMER') + 1;
+  var values = sh.getRange(2, col, sh.getLastRow() - 1, 1).getValues();
+  var seen = {};
+  values.forEach(function (row) {
+    var name = String(row[0] || '').trim();
+    if (name) seen[name] = true;
+  });
+  return Object.keys(seen).sort();
 }
 
 function getRecipeForItem_(item) {
@@ -254,35 +297,86 @@ function nextOrderId_() {
   return 'BOM-' + stamp + '-' + Math.floor(Math.random() * 900 + 100);
 }
 
+/**
+ * Writes one production order across three sheets: a roll-up row on
+ * BOM_Orders (customer, dates, per-department schedule), one row per
+ * ordered item on BOM_Order_Items, and every item's BOM lines on
+ * BOM_Order_Lines tagged with the item they belong to.
+ *
+ * Accepts both the current multi-item payload ({items: [...]}) and the
+ * single-item payload the previous version of the web app sent
+ * ({item, orderQty, lines}).
+ */
 function saveOrder_(order) {
-  if (!order || !order.item) {
-    return { ok: false, error: 'missing order.item' };
+  if (!order) return { ok: false, error: 'missing order' };
+
+  var items = order.items;
+  if (!items || !items.length) {
+    if (!order.item) return { ok: false, error: 'missing order.items' };
+    items = [{
+      item: order.item,
+      baseModel: order.baseModel,
+      packagingCode: order.packagingCode,
+      colorCode: order.colorCode,
+      orderQty: order.orderQty,
+      lines: order.lines || []
+    }];
   }
+
   var orderSheet = getOrCreateSheet_(SHEETS.ORDERS);
+  var itemSheet = getOrCreateSheet_(SHEETS.ORDER_ITEMS);
   var lineSheet = getOrCreateSheet_(SHEETS.LINES);
 
   var orderId = order.orderId || nextOrderId_();
   var now = new Date().toISOString();
+  var schedule = order.schedule || {};
+
+  var totalQty = 0;
+  items.forEach(function (it) {
+    var q = parseFloat(it.orderQty);
+    if (!isNaN(q)) totalQty += q;
+  });
+  var first = items[0];
 
   var headerRow = [
-    orderId, now, order.item, order.baseModel || '', order.packagingCode || '',
-    order.colorCode || '', order.customer || '', order.orderQty || '',
-    order.orderDate || '', order.dueDate || '', order.remarks || '', order.createdBy || ''
+    orderId, now,
+    items.map(function (it) { return it.item || ''; }).join(', '),
+    items.length === 1 ? (first.baseModel || '') : '',
+    items.length === 1 ? (first.packagingCode || '') : '',
+    items.length === 1 ? (first.colorCode || '') : '',
+    order.customer || '', totalQty || '',
+    order.orderDate || '', order.dueDate || '', order.remarks || '', order.createdBy || '',
+    order.poRef || '', items.length
   ];
+  DEPARTMENTS.forEach(function (d) {
+    var s = schedule[d] || {};
+    headerRow.push(s.start || '', s.end || '');
+  });
   orderSheet.appendRow(headerRow);
 
-  var lines = order.lines || [];
-  if (lines.length) {
-    var rows = lines.map(function (l, i) {
-      return [
+  var itemRows = items.map(function (it, i) {
+    return [orderId, i + 1, it.item || '', it.baseModel || '', it.packagingCode || '',
+      it.colorCode || '', it.orderQty || ''];
+  });
+  itemSheet.getRange(itemSheet.getLastRow() + 1, 1, itemRows.length, itemRows[0].length)
+    .setValues(itemRows);
+
+  var lineRows = [];
+  items.forEach(function (it, itemIndex) {
+    (it.lines || []).forEach(function (l, i) {
+      lineRows.push([
         orderId, i + 1, l.materialCode || '', l.materialName || '', l.dept || '',
-        l.qtyPerFg || '', l.unit || '', l.stockQty || '', l.requiredQty || '', l.remarks || ''
-      ];
+        l.qtyPerFg || '', l.unit || '', l.stockQty || '', l.requiredQty || '', l.remarks || '',
+        itemIndex + 1, it.item || ''
+      ]);
     });
-    lineSheet.getRange(lineSheet.getLastRow() + 1, 1, rows.length, rows[0].length).setValues(rows);
+  });
+  if (lineRows.length) {
+    lineSheet.getRange(lineSheet.getLastRow() + 1, 1, lineRows.length, lineRows[0].length)
+      .setValues(lineRows);
   }
 
-  return { ok: true, orderId: orderId };
+  return { ok: true, orderId: orderId, itemCount: items.length, lineCount: lineRows.length };
 }
 
 function addLookupRow_(sheetName, code, description) {
