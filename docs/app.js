@@ -9,7 +9,10 @@
 
 const DEFAULT_SCRIPT_URL = 'https://script.google.com/macros/s/AKfycbwQdBaq0FAH7C6Uj7r7LHL1VCuqLQxqaU1IMHKRLrtFU7EDMl9---Bf5ukckOhbL7RRsA/exec';
 
-const EMPTY_ADDITIONS = { baseItems: [], packagingCodes: [], colorShades: [], materials: [] };
+/** Production departments an order is scheduled through, in flow order. */
+const DEPARTMENTS = ['RB', 'GR', 'PT', 'BG', 'PK', 'ST'];
+
+const EMPTY_ADDITIONS = { baseItems: [], packagingCodes: [], colorShades: [], materials: [], customers: [] };
 
 const Store = {
   getScriptUrl: () => localStorage.getItem('bomapp.scriptUrl') || DEFAULT_SCRIPT_URL,
@@ -69,6 +72,7 @@ const Api = {
   },
   ping: () => Api.get('ping'),
   orders: () => Api.get('orders'),
+  customers: () => Api.get('customers'),
   saveOrder: (order) => Api.post('saveOrder', { order }),
   addPackagingCode: (code, description) => Api.post('addPackagingCode', { code, description }),
   addColorShade: (code, description) => Api.post('addColorShade', { code, description }),
@@ -129,6 +133,11 @@ class Combobox {
   _build() {
     this.mount.innerHTML = '';
     this.mount.classList.add('combobox');
+    // Lets the shared document-level click handler below reach the
+    // instance without every combobox registering its own listener —
+    // item cards are rebuilt often, and per-instance listeners would pile
+    // up on document for the lifetime of the page.
+    this.mount.__combobox = this;
     this.input = document.createElement('input');
     this.input.type = 'text';
     this.input.className = 'combobox-input';
@@ -142,9 +151,6 @@ class Combobox {
     this.input.addEventListener('focus', () => this._open());
     this.input.addEventListener('input', () => { this._open(); this._render(); });
     this.input.addEventListener('keydown', (e) => this._onKeydown(e));
-    document.addEventListener('click', (e) => {
-      if (!this.mount.contains(e.target)) this._close();
-    });
   }
 
   setItems(items) {
@@ -155,6 +161,11 @@ class Combobox {
   setValue(text) {
     this.input.value = text || '';
     this.value = text || '';
+  }
+
+  /** Raw text in the box — use when free text is acceptable (e.g. customer). */
+  getText() {
+    return this.input.value.trim();
   }
 
   _open() { this.mount.classList.add('is-open'); this._render(); }
@@ -182,7 +193,7 @@ class Combobox {
       return;
     }
 
-    results.forEach((it, i) => {
+    results.forEach((it) => {
       const opt = document.createElement('div');
       opt.className = 'combobox-option';
       opt.innerHTML = `<span class="opt-label"></span>` + (it.sub ? `<span class="opt-sub"></span>` : '');
@@ -247,16 +258,30 @@ class Combobox {
   }
 }
 
-/* ============================== App State ============================== */
+document.addEventListener('click', (e) => {
+  document.querySelectorAll('.combobox.is-open').forEach((el) => {
+    if (!el.contains(e.target) && el.__combobox) el.__combobox._close();
+  });
+});
+
+/* ============================== App State ==============================
+ * One order = order header + a per-department schedule + N items, each
+ * item carrying its own ordered quantity and its own BOM lines. Required
+ * quantities are therefore computed per item (qtyPerFg × that item's
+ * quantity) and rolled up across items in the summary table.
+ */
 
 const App = {
-  data: { materials: [], baseItems: [], packagingCodes: [], colorShades: [] },
+  data: { materials: [], baseItems: [], packagingCodes: [], colorShades: [], customers: [] },
   recipeIndex: {}, // item name -> recipe file id, from data/recipes/index.json
-  lines: [], // current BOM lines being edited: {rowId, materialCode, materialName, dept, unit, qtyPerFg, stockQty, remarks}
-  itemBuild: { baseModel: '', packaging: '', color: '' },
+  items: [], // see makeItem()
+  schedule: {}, // dept code -> {start, end}
+  itemSeq: 1,
   rowSeq: 1,
   connected: false,
 };
+
+DEPARTMENTS.forEach((d) => { App.schedule[d] = { start: '', end: '' }; });
 
 function fmtNum(n) {
   if (n === '' || n === null || n === undefined || isNaN(n)) return '';
@@ -275,6 +300,11 @@ function initNav() {
     document.querySelectorAll('.view').forEach((v) => v.classList.toggle('is-active', v.id === 'view-' + view));
     if (view === 'history') loadHistory();
   });
+}
+
+function showNewBomView() {
+  document.querySelectorAll('.nav-btn').forEach((b) => b.classList.toggle('is-active', b.dataset.view === 'new'));
+  document.querySelectorAll('.view').forEach((v) => v.classList.toggle('is-active', v.id === 'view-new'));
 }
 
 /* ------------------------------ Connection ------------------------------ */
@@ -319,11 +349,34 @@ async function loadStaticData() {
   local.materials.forEach((m) => {
     if (!App.data.materials.some((r) => r.CODE === m.CODE)) App.data.materials.push(m);
   });
+  local.customers.forEach((c) => mergeCustomer(c));
 
-  refreshBaseModelItems();
-  refreshPackagingItems();
-  refreshColorItems();
   refreshMaterialCatalogCache();
+  refreshItemPickers();
+  refreshCustomerItems();
+}
+
+/**
+ * The customer list has no static source file — it is whatever has been
+ * used on previous orders, so it is read back from the sheet (plus any
+ * name typed in this browser). Failing to reach the sheet must not break
+ * the picker: it stays a free-text combobox either way.
+ */
+async function loadCustomers() {
+  try {
+    const res = await Api.customers();
+    if (res && res.ok && Array.isArray(res.customers)) {
+      res.customers.forEach(mergeCustomer);
+      refreshCustomerItems();
+    }
+  } catch (err) {
+    /* offline or an Apps Script deployment without the action — ignore */
+  }
+}
+
+function mergeCustomer(name) {
+  const clean = String(name || '').trim();
+  if (clean && !App.data.customers.includes(clean)) App.data.customers.push(clean);
 }
 
 /** Checks the Apps Script link, which is only needed to save and to read history. */
@@ -339,6 +392,7 @@ async function connect() {
     if (!ping.ok) throw new Error('ping failed');
     setStatus('ok', 'เชื่อมต่อแล้ว');
     App.connected = true;
+    loadCustomers();
   } catch (err) {
     setStatus('', 'บันทึกไม่ได้ (ตรวจสอบการเชื่อมต่อ)');
     App.connected = false;
@@ -346,53 +400,46 @@ async function connect() {
   }
 }
 
-/* --------------------------- Item code builder --------------------------- */
+/* ---------------------------- Lookup pickers ---------------------------- */
 
-let cbBaseModel, cbPackaging, cbColor, cbMaterialFactory;
+let cbCustomer = null;
 
-function refreshBaseModelItems() {
-  const items = App.data.baseItems.map((name) => ({ value: name, label: name }));
-  cbBaseModel.setItems(items);
-}
-function refreshPackagingItems() {
-  const items = App.data.packagingCodes.map((r) => ({
-    value: r.CODE, label: r.CODE, sub: r.DESCRIPTION || '',
-  }));
-  cbPackaging.setItems(items);
-}
-function refreshColorItems() {
-  const items = App.data.colorShades.map((r) => ({
-    value: r.CODE, label: r.CODE, sub: r.DESCRIPTION || '(ยังไม่มีคำอธิบาย)',
-  }));
-  cbColor.setItems(items);
-}
+// Kept as one array that is mutated in place (never reassigned) so every
+// material combobox already built keeps seeing new codes.
+const materialCatalogItems = [];
 
-let materialCatalogItems = [];
 function refreshMaterialCatalogCache() {
-  materialCatalogItems = App.data.materials.map((m) => ({
+  materialCatalogItems.length = 0;
+  App.data.materials.forEach((m) => materialCatalogItems.push({
     value: m.CODE, label: m.CODE, sub: [m.NAME, m.UNIT].filter(Boolean).join(' · '),
     __row: m,
   }));
 }
 
-function updateItemPreview() {
-  const manual = document.getElementById('itemManualToggle').checked;
-  const previewEl = document.getElementById('itemPreview');
-  let value = '';
-  if (manual) {
-    value = document.getElementById('itemManualInput').value.trim();
-  } else {
-    const { baseModel, packaging, color } = App.itemBuild;
-    if (baseModel && packaging && color) value = `${baseModel}(${packaging})-${color}`;
-    else if (baseModel) value = baseModel + (packaging ? `(${packaging})` : '') + (color ? `-${color}` : '');
-  }
-  previewEl.textContent = value || '—';
-  document.getElementById('loadRecipeBtn').disabled = !value;
-  return value;
+function baseModelItems() {
+  return App.data.baseItems.map((name) => ({ value: name, label: name }));
+}
+function packagingItems() {
+  return App.data.packagingCodes.map((r) => ({ value: r.CODE, label: r.CODE, sub: r.DESCRIPTION || '' }));
+}
+function colorItems() {
+  return App.data.colorShades.map((r) => ({
+    value: r.CODE, label: r.CODE, sub: r.DESCRIPTION || '(ยังไม่มีคำอธิบาย)',
+  }));
 }
 
-function currentItemCode() {
-  return updateItemPreview();
+/** Pushes freshly added base/packaging/colour codes into every item card. */
+function refreshItemPickers() {
+  App.items.forEach((it) => {
+    if (!it._cb) return;
+    it._cb.base.setItems(baseModelItems());
+    it._cb.packaging.setItems(packagingItems());
+    it._cb.color.setItems(colorItems());
+  });
+}
+
+function refreshCustomerItems() {
+  if (cbCustomer) cbCustomer.setItems(App.data.customers.map((c) => ({ value: c, label: c })));
 }
 
 async function ensureLookupCreated(kind, code) {
@@ -402,19 +449,19 @@ async function ensureLookupCreated(kind, code) {
     Store.addLocal('packagingCodes', code);
     if (!App.data.packagingCodes.some((r) => r.CODE === code)) {
       App.data.packagingCodes.push({ CODE: code, DESCRIPTION: '' });
-      refreshPackagingItems();
+      refreshItemPickers();
     }
   } else if (kind === 'color') {
     Store.addLocal('colorShades', code);
     if (!App.data.colorShades.some((r) => r.CODE === code)) {
       App.data.colorShades.push({ CODE: code, DESCRIPTION: '' });
-      refreshColorItems();
+      refreshItemPickers();
     }
   } else if (kind === 'baseModel') {
     Store.addLocal('baseItems', code);
     if (!App.data.baseItems.includes(code)) {
       App.data.baseItems.push(code);
-      refreshBaseModelItems();
+      refreshItemPickers();
     }
   }
 
@@ -428,146 +475,333 @@ async function ensureLookupCreated(kind, code) {
   }
 }
 
-function initItemBuilder() {
-  cbBaseModel = new Combobox(document.getElementById('cb-baseModel'), {
-    placeholder: 'ค้นหาหรือพิมพ์รุ่นสินค้าใหม่...',
+function initCustomerPicker() {
+  cbCustomer = new Combobox(document.getElementById('cb-customer'), {
+    placeholder: 'ค้นหาชื่อลูกค้า หรือพิมพ์ชื่อใหม่...',
     allowCreate: true,
-    createLabel: (q) => `+ เพิ่มรุ่นสินค้าใหม่: "${q}"`,
+    createLabel: (q) => `+ ใช้ชื่อลูกค้าใหม่: "${q}"`,
     onSelect: (item) => {
-      App.itemBuild.baseModel = item.value;
-      if (item.__created) ensureLookupCreated('baseModel', item.value);
-      updateItemPreview();
+      if (item.__created) {
+        Store.addLocal('customers', item.value);
+        mergeCustomer(item.value);
+        refreshCustomerItems();
+      }
     },
   });
-  cbPackaging = new Combobox(document.getElementById('cb-packaging'), {
-    placeholder: 'เช่น P, B, X, C...',
-    allowCreate: true,
-    createLabel: (q) => `+ เพิ่มรหัส Packaging ใหม่: "${q}"`,
-    onSelect: (item) => {
-      App.itemBuild.packaging = item.value;
-      if (item.__created) ensureLookupCreated('packaging', item.value);
-      updateItemPreview();
-    },
-  });
-  cbColor = new Combobox(document.getElementById('cb-color'), {
-    placeholder: 'เช่น A, Y, Z...',
-    allowCreate: true,
-    createLabel: (q) => `+ เพิ่มเฉดสีใหม่: "${q}"`,
-    onSelect: (item) => {
-      App.itemBuild.color = item.value;
-      if (item.__created) ensureLookupCreated('color', item.value);
-      updateItemPreview();
-    },
-  });
-
-  document.getElementById('itemManualToggle').addEventListener('change', (e) => {
-    document.getElementById('itemManualInput').disabled = !e.target.checked;
-    updateItemPreview();
-  });
-  document.getElementById('itemManualInput').addEventListener('input', updateItemPreview);
-
-  document.getElementById('loadRecipeBtn').addEventListener('click', loadRecipeFromMaster);
 }
 
-/**
- * Resolves an item to its recipe file id, trying the full composed code
- * first and then the base model — an item like "AT-01N-MOD-B(B)-A" is often
- * a packaging/colour variant whose recipe is filed under "AT-01N-MOD-B".
- */
-function resolveRecipeId(item) {
-  const candidates = [item, App.itemBuild.baseModel].filter(Boolean);
-  for (const key of candidates) {
-    if (Object.prototype.hasOwnProperty.call(App.recipeIndex, key)) {
-      return { id: App.recipeIndex[key], matched: key };
-    }
-  }
-  return null;
-}
+/* ----------------------- Department schedule (2) ------------------------ */
 
-async function loadRecipeFromMaster() {
-  const item = currentItemCode();
-  const hint = document.getElementById('recipeHint');
-  const btn = document.getElementById('loadRecipeBtn');
+function renderSchedule() {
+  const tbody = document.getElementById('scheduleBody');
+  tbody.innerHTML = '';
+  DEPARTMENTS.forEach((dept) => {
+    const tr = document.createElement('tr');
 
-  const found = resolveRecipeId(item);
-  if (!found) {
-    hint.textContent = 'ไม่พบสูตรวัตถุดิบเดิมสำหรับรหัสนี้ในระบบเก่า — เพิ่มรายการเองได้ด้านล่าง';
-    return;
-  }
+    const tdName = document.createElement('td');
+    tdName.className = 'dept-cell';
+    tdName.textContent = dept;
+    tr.appendChild(tdName);
 
-  btn.disabled = true;
-  hint.textContent = 'กำลังโหลดสูตรวัตถุดิบเดิม...';
-  let rows;
-  try {
-    rows = await StaticData.recipe(found.id);
-  } catch (err) {
-    hint.textContent = 'โหลดสูตรวัตถุดิบไม่สำเร็จ: ' + err.message;
-    btn.disabled = false;
-    return;
-  }
-  btn.disabled = false;
-
-  if (!rows || !rows.length) {
-    hint.textContent = 'ไม่พบสูตรวัตถุดิบเดิมสำหรับรหัสนี้ในระบบเก่า — เพิ่มรายการเองได้ด้านล่าง';
-    return;
-  }
-  if (App.lines.length && !confirm(`พบสูตรวัตถุดิบเดิม ${rows.length} รายการ — แทนที่รายการปัจจุบันหรือไม่?`)) {
-    return;
-  }
-  App.lines = [];
-  rows.forEach((r) => {
-    addLine({
-      materialCode: r.CODE || '',
-      materialName: r.NAME || '',
-      dept: r.DEPT_MAKER || r.DEPT || '',
-      // RB_COUNT_UNIT is the material's issuing unit — the legacy add_Item
-      // macro maps this column (BM) into the BOM sheet's unit column (AI).
-      unit: r.RB_COUNT_UNIT || r.CUT_UNIT || r.PIECES_UNIT || '',
-      qtyPerFg: r.QTY_PER_SET || '',
-      stockQty: '',
-      remarks: '',
+    ['start', 'end'].forEach((key) => {
+      const td = document.createElement('td');
+      const input = document.createElement('input');
+      input.type = 'date';
+      input.value = App.schedule[dept][key];
+      input.addEventListener('input', (e) => { App.schedule[dept][key] = e.target.value; });
+      td.appendChild(input);
+      tr.appendChild(td);
     });
+
+    tbody.appendChild(tr);
   });
-  hint.textContent = found.matched === item
-    ? `โหลดสูตรวัตถุดิบเดิมแล้ว ${rows.length} รายการ`
-    : `โหลดสูตรวัตถุดิบเดิมแล้ว ${rows.length} รายการ (จากรุ่น "${found.matched}")`;
-  renderLines();
 }
 
-/* ------------------------------- BOM lines ------------------------------- */
+function setSchedule(values) {
+  DEPARTMENTS.forEach((d) => {
+    App.schedule[d] = {
+      start: (values && values[d] && values[d].start) || '',
+      end: (values && values[d] && values[d].end) || '',
+    };
+  });
+  renderSchedule();
+}
 
-function addLine(prefill) {
-  App.lines.push(Object.assign({
+/* ------------------------------ Items (3) ------------------------------- */
+
+function makeItem(prefill) {
+  return Object.assign({
+    itemId: App.itemSeq++,
+    baseModel: '', packaging: '', color: '',
+    manual: false, manualCode: '',
+    qty: '',
+    lines: [],
+    hint: '',
+  }, prefill || {});
+}
+
+function itemCode(it) {
+  if (it.manual) return (it.manualCode || '').trim();
+  const { baseModel, packaging, color } = it;
+  if (!baseModel) return '';
+  if (packaging && color) return `${baseModel}(${packaging})-${color}`;
+  return baseModel + (packaging ? `(${packaging})` : '') + (color ? `-${color}` : '');
+}
+
+function itemQty(it) {
+  const v = parseFloat(it.qty);
+  return isNaN(v) ? 0 : v;
+}
+
+function addItem(prefill) {
+  const it = makeItem(prefill);
+  App.items.push(it);
+  return it;
+}
+
+function removeItem(itemId) {
+  App.items = App.items.filter((i) => i.itemId !== itemId);
+  if (!App.items.length) addItem();
+  renderItems();
+  renderSummary();
+}
+
+function addLine(it, prefill) {
+  it.lines.push(Object.assign({
     rowId: App.rowSeq++,
     materialCode: '', materialName: '', dept: '', unit: '',
     qtyPerFg: '', stockQty: '', remarks: '',
   }, prefill || {}));
 }
 
-function removeLine(rowId) {
-  App.lines = App.lines.filter((l) => l.rowId !== rowId);
-  renderLines();
-}
-
-function orderQty() {
-  const v = parseFloat(document.getElementById('f-orderQty').value);
-  return isNaN(v) ? 0 : v;
-}
-
-function requiredQty(line) {
+function requiredQty(line, qty) {
   const qpf = parseFloat(line.qtyPerFg);
   const stock = parseFloat(line.stockQty);
   if (isNaN(qpf)) return '';
-  const need = qpf * orderQty() - (isNaN(stock) ? 0 : stock);
+  const need = qpf * qty - (isNaN(stock) ? 0 : stock);
   return Math.round(need * 1000) / 1000;
 }
 
-function renderLines() {
-  const tbody = document.getElementById('bomTableBody');
-  tbody.innerHTML = '';
-  document.getElementById('bomEmptyHint').style.display = App.lines.length ? 'none' : 'block';
+function renderItems() {
+  const host = document.getElementById('itemList');
+  host.innerHTML = '';
+  App.items.forEach((it, index) => host.appendChild(buildItemCard(it, index)));
+}
 
-  App.lines.forEach((line) => {
+function buildItemCard(it, index) {
+  const card = document.createElement('div');
+  card.className = 'item-card';
+  card.dataset.itemId = it.itemId;
+
+  /* --- head: index, resolved code, quantity badge, remove --- */
+  const head = document.createElement('div');
+  head.className = 'item-card-head';
+  const no = document.createElement('span');
+  no.className = 'item-no';
+  no.textContent = 'Item ' + (index + 1);
+  const codeEl = document.createElement('code');
+  codeEl.className = 'item-code';
+  const qtyBadge = document.createElement('span');
+  qtyBadge.className = 'item-qty-badge';
+  const spacer = document.createElement('span');
+  spacer.className = 'item-head-spacer';
+  const delBtn = document.createElement('button');
+  delBtn.className = 'btn-danger-ghost';
+  delBtn.textContent = '✕';
+  delBtn.title = 'ลบ Item นี้';
+  delBtn.addEventListener('click', () => removeItem(it.itemId));
+  head.append(no, codeEl, qtyBadge, spacer, delBtn);
+  card.appendChild(head);
+
+  /* --- builder: base model + packaging + colour + ordered quantity --- */
+  const builder = document.createElement('div');
+  builder.className = 'item-builder';
+  const mountBase = fieldWithMount(builder, 'รุ่นสินค้า (Base Model)');
+  const mountPkg = fieldWithMount(builder, 'Packaging', 'field-narrow');
+  const mountColor = fieldWithMount(builder, 'เฉดสี (Color Set)', 'field-narrow');
+
+  const qtyField = document.createElement('div');
+  qtyField.className = 'field field-narrow';
+  const qtyLabel = document.createElement('label');
+  qtyLabel.textContent = 'จำนวนที่สั่ง (FG)';
+  const qtyInput = document.createElement('input');
+  qtyInput.type = 'number';
+  qtyInput.min = '0';
+  qtyInput.step = 'any';
+  qtyInput.placeholder = '0';
+  qtyInput.value = it.qty;
+  qtyField.append(qtyLabel, qtyInput);
+  builder.appendChild(qtyField);
+  card.appendChild(builder);
+
+  /* --- resolved item code + manual override --- */
+  const preview = document.createElement('div');
+  preview.className = 'item-preview';
+  const previewLabel = document.createElement('span');
+  previewLabel.className = 'item-preview-label';
+  previewLabel.textContent = 'รหัส ITEM ที่จะบันทึก:';
+  const previewCode = document.createElement('code');
+  const manualToggleLabel = document.createElement('label');
+  manualToggleLabel.className = 'manual-toggle';
+  const manualToggle = document.createElement('input');
+  manualToggle.type = 'checkbox';
+  manualToggle.checked = it.manual;
+  manualToggleLabel.append(manualToggle, document.createTextNode(' แก้ไขรหัสเอง'));
+  const manualInput = document.createElement('input');
+  manualInput.type = 'text';
+  manualInput.className = 'item-manual-input';
+  manualInput.placeholder = 'พิมพ์รหัส ITEM แบบเต็ม';
+  manualInput.value = it.manualCode;
+  manualInput.disabled = !it.manual;
+  preview.append(previewLabel, previewCode, manualToggleLabel, manualInput);
+  card.appendChild(preview);
+
+  /* --- this item's BOM lines --- */
+  const linesBox = document.createElement('div');
+  linesBox.className = 'item-lines';
+  const linesHead = document.createElement('div');
+  linesHead.className = 'item-lines-head';
+  const linesTitle = document.createElement('span');
+  linesTitle.className = 'item-lines-title';
+  const hintEl = document.createElement('span');
+  hintEl.className = 'hint-inline';
+  hintEl.textContent = it.hint;
+  const linesSpacer = document.createElement('span');
+  linesSpacer.className = 'item-head-spacer';
+  const loadBtn = document.createElement('button');
+  loadBtn.className = 'btn btn-secondary btn-sm';
+  loadBtn.textContent = 'โหลดสูตรของ Item นี้';
+  const addLineBtn = document.createElement('button');
+  addLineBtn.className = 'btn btn-primary btn-sm';
+  addLineBtn.textContent = '+ เพิ่มรายการวัตถุดิบ';
+  linesHead.append(linesTitle, hintEl, linesSpacer, loadBtn, addLineBtn);
+  linesBox.appendChild(linesHead);
+
+  const wrap = document.createElement('div');
+  wrap.className = 'table-wrap';
+  const table = document.createElement('table');
+  table.className = 'bom-table';
+  table.innerHTML = `<thead><tr>
+      <th style="width:26%">วัตถุดิบ</th>
+      <th>แผนก</th>
+      <th>จำนวนใช้ : 1 FG</th>
+      <th>หน่วย</th>
+      <th>คงคลัง</th>
+      <th>ต้องเบิก/สั่งซื้อ</th>
+      <th>หมายเหตุ</th>
+      <th></th>
+    </tr></thead>`;
+  const tbody = document.createElement('tbody');
+  table.appendChild(tbody);
+  wrap.appendChild(table);
+  linesBox.appendChild(wrap);
+  const emptyHint = document.createElement('p');
+  emptyHint.className = 'empty-hint';
+  emptyHint.textContent = 'ยังไม่มีรายการวัตถุดิบ — กด "เพิ่มรายการวัตถุดิบ" หรือโหลดสูตรจากระบบเดิม';
+  linesBox.appendChild(emptyHint);
+  card.appendChild(linesBox);
+
+  /* --- wiring --- */
+  it._el = { card, codeEl, qtyBadge, previewCode, tbody, emptyHint, hintEl, linesTitle, loadBtn };
+
+  const syncCode = () => {
+    const code = itemCode(it);
+    codeEl.textContent = code || '—';
+    previewCode.textContent = code || '—';
+    loadBtn.disabled = !code;
+  };
+  const syncQty = () => {
+    const q = itemQty(it);
+    qtyBadge.textContent = q ? '× ' + q.toLocaleString() : 'ยังไม่ระบุจำนวน';
+    qtyBadge.classList.toggle('is-missing', !q);
+  };
+
+  it._cb = {
+    base: new Combobox(mountBase, {
+      placeholder: 'ค้นหาหรือพิมพ์รุ่นสินค้าใหม่...',
+      items: baseModelItems(),
+      allowCreate: true,
+      createLabel: (q) => `+ เพิ่มรุ่นสินค้าใหม่: "${q}"`,
+      onSelect: (sel) => {
+        it.baseModel = sel.value;
+        if (sel.__created) ensureLookupCreated('baseModel', sel.value);
+        syncCode();
+      },
+    }),
+    packaging: new Combobox(mountPkg, {
+      placeholder: 'เช่น P, B, X, C...',
+      items: packagingItems(),
+      allowCreate: true,
+      createLabel: (q) => `+ เพิ่มรหัส Packaging ใหม่: "${q}"`,
+      onSelect: (sel) => {
+        it.packaging = sel.value;
+        if (sel.__created) ensureLookupCreated('packaging', sel.value);
+        syncCode();
+      },
+    }),
+    color: new Combobox(mountColor, {
+      placeholder: 'เช่น A, Y, Z...',
+      items: colorItems(),
+      allowCreate: true,
+      createLabel: (q) => `+ เพิ่มเฉดสีใหม่: "${q}"`,
+      onSelect: (sel) => {
+        it.color = sel.value;
+        if (sel.__created) ensureLookupCreated('color', sel.value);
+        syncCode();
+      },
+    }),
+  };
+  it._cb.base.setValue(it.baseModel);
+  it._cb.packaging.setValue(it.packaging);
+  it._cb.color.setValue(it.color);
+
+  qtyInput.addEventListener('input', (e) => {
+    it.qty = e.target.value;
+    syncQty();
+    recalcItem(it);
+    renderSummary();
+  });
+
+  manualToggle.addEventListener('change', (e) => {
+    it.manual = e.target.checked;
+    manualInput.disabled = !it.manual;
+    syncCode();
+  });
+  manualInput.addEventListener('input', (e) => { it.manualCode = e.target.value; syncCode(); });
+
+  loadBtn.addEventListener('click', () => loadRecipeForItem(it, { confirmReplace: true }));
+  addLineBtn.addEventListener('click', () => {
+    addLine(it);
+    renderItemLines(it);
+    renderSummary();
+  });
+
+  syncCode();
+  syncQty();
+  renderItemLines(it);
+  return card;
+}
+
+function fieldWithMount(parent, labelText, extraClass) {
+  const field = document.createElement('div');
+  field.className = 'field' + (extraClass ? ' ' + extraClass : '');
+  const label = document.createElement('label');
+  label.textContent = labelText;
+  const mount = document.createElement('div');
+  mount.className = 'combobox-mount';
+  field.append(label, mount);
+  parent.appendChild(field);
+  return mount;
+}
+
+function renderItemLines(it) {
+  if (!it._el) return;
+  const { tbody, emptyHint, linesTitle } = it._el;
+  tbody.innerHTML = '';
+  emptyHint.style.display = it.lines.length ? 'none' : 'block';
+  linesTitle.textContent = `รายการวัตถุดิบ (${it.lines.length})`;
+
+  it.lines.forEach((line) => {
     const tr = document.createElement('tr');
     tr.dataset.rowId = line.rowId;
 
@@ -579,7 +813,7 @@ function renderLines() {
     nameInput.placeholder = 'ชื่อวัตถุดิบ';
     nameInput.value = line.materialName;
     nameInput.style.marginTop = '4px';
-    nameInput.addEventListener('input', (e) => { line.materialName = e.target.value; });
+    nameInput.addEventListener('input', (e) => { line.materialName = e.target.value; renderSummary(); });
     tdMaterial.appendChild(nameInput);
     tr.appendChild(tdMaterial);
 
@@ -609,6 +843,7 @@ function renderLines() {
             .then(() => toast('เพิ่มรหัสวัตถุดิบใหม่แล้ว: ' + item.value, 'success'))
             .catch((err) => toast('เพิ่มในเครื่องแล้ว แต่บันทึกลงชีทไม่สำเร็จ: ' + err.message, 'error'));
         }
+        renderSummary();
       },
     });
     combo.setValue(line.materialCode);
@@ -626,7 +861,11 @@ function renderLines() {
     qtyInput.type = 'number';
     qtyInput.step = 'any';
     qtyInput.value = line.qtyPerFg;
-    qtyInput.addEventListener('input', (e) => { line.qtyPerFg = e.target.value; updateRequiredCell(tr, line); });
+    qtyInput.addEventListener('input', (e) => {
+      line.qtyPerFg = e.target.value;
+      updateRequiredCell(tr, line, itemQty(it));
+      renderSummary();
+    });
     tdQty.appendChild(qtyInput);
     tr.appendChild(tdQty);
 
@@ -634,7 +873,7 @@ function renderLines() {
     const unitInput = document.createElement('input');
     unitInput.type = 'text';
     unitInput.value = line.unit;
-    unitInput.addEventListener('input', (e) => { line.unit = e.target.value; });
+    unitInput.addEventListener('input', (e) => { line.unit = e.target.value; renderSummary(); });
     tdUnit.appendChild(unitInput);
     tr.appendChild(tdUnit);
 
@@ -643,13 +882,16 @@ function renderLines() {
     stockInput.type = 'number';
     stockInput.step = 'any';
     stockInput.value = line.stockQty;
-    stockInput.addEventListener('input', (e) => { line.stockQty = e.target.value; updateRequiredCell(tr, line); });
+    stockInput.addEventListener('input', (e) => {
+      line.stockQty = e.target.value;
+      updateRequiredCell(tr, line, itemQty(it));
+      renderSummary();
+    });
     tdStock.appendChild(stockInput);
     tr.appendChild(tdStock);
 
     const tdReq = document.createElement('td');
     tdReq.className = 'required-cell';
-    tdReq.textContent = fmtNum(requiredQty(line));
     tr.appendChild(tdReq);
 
     const tdRemarks = document.createElement('td');
@@ -665,78 +907,281 @@ function renderLines() {
     delBtn.className = 'btn-danger-ghost';
     delBtn.textContent = '✕';
     delBtn.title = 'ลบรายการ';
-    delBtn.addEventListener('click', () => removeLine(line.rowId));
+    delBtn.addEventListener('click', () => {
+      it.lines = it.lines.filter((l) => l.rowId !== line.rowId);
+      renderItemLines(it);
+      renderSummary();
+    });
     tdDel.appendChild(delBtn);
     tr.appendChild(tdDel);
 
+    updateRequiredCell(tr, line, itemQty(it));
     tbody.appendChild(tr);
   });
 }
 
-function updateRequiredCell(tr, line) {
+function updateRequiredCell(tr, line, qty) {
   const cell = tr.children[5];
-  const req = requiredQty(line);
+  const req = requiredQty(line, qty);
   cell.textContent = fmtNum(req);
   cell.classList.toggle('required-negative', typeof req === 'number' && req < 0);
 }
 
-function recalcAllRequired() {
-  const tbody = document.getElementById('bomTableBody');
-  Array.from(tbody.children).forEach((tr) => {
-    const rowId = Number(tr.dataset.rowId);
-    const line = App.lines.find((l) => l.rowId === rowId);
-    if (line) updateRequiredCell(tr, line);
+function recalcItem(it) {
+  if (!it._el) return;
+  const qty = itemQty(it);
+  Array.from(it._el.tbody.children).forEach((tr) => {
+    const line = it.lines.find((l) => l.rowId === Number(tr.dataset.rowId));
+    if (line) updateRequiredCell(tr, line, qty);
+  });
+}
+
+/* -------------------- Recipe loading (all items at once) ----------------- */
+
+/**
+ * Resolves an item to its recipe file id, trying the full composed code
+ * first and then the base model — an item like "AT-01N-MOD-B(B)-A" is often
+ * a packaging/colour variant whose recipe is filed under "AT-01N-MOD-B".
+ */
+function resolveRecipeId(it) {
+  const candidates = [itemCode(it), it.baseModel].filter(Boolean);
+  for (const key of candidates) {
+    if (Object.prototype.hasOwnProperty.call(App.recipeIndex, key)) {
+      return { id: App.recipeIndex[key], matched: key };
+    }
+  }
+  return null;
+}
+
+function setItemHint(it, text) {
+  it.hint = text;
+  if (it._el) it._el.hintEl.textContent = text;
+}
+
+/**
+ * Pulls one item's legacy recipe in. Returns a short status string used to
+ * summarise a bulk load. `confirmReplace` is off during a bulk load so the
+ * user gets a single confirmation instead of one per item.
+ */
+async function loadRecipeForItem(it, opts) {
+  const options = opts || {};
+  const code = itemCode(it);
+  if (!code) {
+    setItemHint(it, 'ยังไม่ได้เลือกรหัส ITEM');
+    return 'skipped';
+  }
+
+  const found = resolveRecipeId(it);
+  if (!found) {
+    setItemHint(it, 'ไม่พบสูตรวัตถุดิบเดิมสำหรับรหัสนี้ในระบบเก่า — เพิ่มรายการเองได้ด้านล่าง');
+    return 'notfound';
+  }
+
+  if (options.confirmReplace && it.lines.length &&
+      !confirm(`Item "${code}" มีรายการวัตถุดิบอยู่แล้ว — แทนที่ด้วยสูตรจากระบบเดิมหรือไม่?`)) {
+    return 'skipped';
+  }
+
+  setItemHint(it, 'กำลังโหลดสูตรวัตถุดิบเดิม...');
+  let rows;
+  try {
+    rows = await StaticData.recipe(found.id);
+  } catch (err) {
+    setItemHint(it, 'โหลดสูตรวัตถุดิบไม่สำเร็จ: ' + err.message);
+    return 'error';
+  }
+
+  if (!rows || !rows.length) {
+    setItemHint(it, 'ไม่พบสูตรวัตถุดิบเดิมสำหรับรหัสนี้ในระบบเก่า — เพิ่มรายการเองได้ด้านล่าง');
+    return 'notfound';
+  }
+
+  it.lines = [];
+  rows.forEach((r) => {
+    addLine(it, {
+      materialCode: r.CODE || '',
+      materialName: r.NAME || '',
+      dept: r.DEPT_MAKER || r.DEPT || '',
+      // RB_COUNT_UNIT is the material's issuing unit — the legacy add_Item
+      // macro maps this column (BM) into the BOM sheet's unit column (AI).
+      unit: r.RB_COUNT_UNIT || r.CUT_UNIT || r.PIECES_UNIT || '',
+      qtyPerFg: r.QTY_PER_SET || '',
+      stockQty: '',
+      remarks: '',
+    });
+  });
+  setItemHint(it, found.matched === code
+    ? `โหลดสูตรเดิมแล้ว ${rows.length} รายการ`
+    : `โหลดสูตรเดิมแล้ว ${rows.length} รายการ (จากรุ่น "${found.matched}")`);
+  renderItemLines(it);
+  return 'loaded';
+}
+
+/** One click: pull every item's legacy recipe and recompute the whole order. */
+async function loadAllRecipes() {
+  const hint = document.getElementById('loadAllHint');
+  const btn = document.getElementById('loadAllRecipesBtn');
+  const targets = App.items.filter((it) => itemCode(it));
+
+  if (!targets.length) {
+    hint.textContent = 'ยังไม่ได้เลือกรหัส ITEM — เลือกรุ่นสินค้าอย่างน้อย 1 Item ก่อน';
+    return;
+  }
+  const withLines = targets.filter((it) => it.lines.length);
+  if (withLines.length &&
+      !confirm(`มี ${withLines.length} Item ที่มีรายการวัตถุดิบอยู่แล้ว — แทนที่ทั้งหมดด้วยสูตรจากระบบเดิมหรือไม่?`)) {
+    return;
+  }
+
+  btn.disabled = true;
+  hint.textContent = `กำลังโหลดสูตรวัตถุดิบของ ${targets.length} Item...`;
+  const results = await Promise.all(targets.map((it) => loadRecipeForItem(it)));
+  btn.disabled = false;
+
+  const loaded = results.filter((r) => r === 'loaded').length;
+  const notFound = results.filter((r) => r === 'notfound').length;
+  const failed = results.filter((r) => r === 'error').length;
+  hint.textContent = [
+    `โหลดสูตรสำเร็จ ${loaded}/${targets.length} Item`,
+    notFound ? `ไม่พบสูตรเดิม ${notFound} Item` : '',
+    failed ? `โหลดไม่สำเร็จ ${failed} Item` : '',
+  ].filter(Boolean).join(' · ');
+
+  renderSummary();
+  if (loaded) toast(`โหลดสูตรและคำนวณให้ ${loaded} Item พร้อมกันแล้ว`, 'success');
+}
+
+/* ------------------------------ Summary (4) ------------------------------ */
+
+/** Rolls every item's lines up by material so purchasing sees one number. */
+function summaryRows() {
+  const byMaterial = new Map();
+  App.items.forEach((it) => {
+    const qty = itemQty(it);
+    const code = itemCode(it);
+    it.lines.forEach((line) => {
+      const key = line.materialCode || line.materialName;
+      if (!key) return;
+      if (!byMaterial.has(key)) {
+        byMaterial.set(key, {
+          code: line.materialCode, name: line.materialName, unit: line.unit,
+          need: 0, stock: 0, items: new Set(),
+        });
+      }
+      const agg = byMaterial.get(key);
+      if (!agg.name) agg.name = line.materialName;
+      if (!agg.unit) agg.unit = line.unit;
+      const qpf = parseFloat(line.qtyPerFg);
+      const stock = parseFloat(line.stockQty);
+      if (!isNaN(qpf)) agg.need += qpf * qty;
+      if (!isNaN(stock)) agg.stock += stock;
+      if (code) agg.items.add(code);
+    });
+  });
+  return Array.from(byMaterial.values());
+}
+
+function renderSummary() {
+  const tbody = document.getElementById('summaryBody');
+  const rows = summaryRows();
+  tbody.innerHTML = '';
+  document.getElementById('summaryEmptyHint').style.display = rows.length ? 'none' : 'block';
+
+  const totalQty = App.items.reduce((sum, it) => sum + itemQty(it), 0);
+  document.getElementById('summaryHint').textContent = rows.length
+    ? `${App.items.filter((it) => itemCode(it)).length} Item · รวมสั่งผลิต ${totalQty.toLocaleString()} ชิ้น · วัตถุดิบ ${rows.length} รายการ`
+    : '';
+
+  rows.forEach((r) => {
+    const required = Math.round((r.need - r.stock) * 1000) / 1000;
+    const tr = document.createElement('tr');
+    [
+      r.code || '—',
+      r.name || '',
+      r.unit || '',
+      String(r.items.size),
+      fmtNum(r.need),
+      fmtNum(r.stock),
+      fmtNum(required),
+    ].forEach((text, i) => {
+      const td = document.createElement('td');
+      td.textContent = text;
+      if (i === 6) {
+        td.className = 'required-cell' + (required < 0 ? ' required-negative' : '');
+      }
+      tr.appendChild(td);
+    });
+    tbody.appendChild(tr);
   });
 }
 
 /* --------------------------------- Save ---------------------------------- */
 
 function resetForm() {
-  App.lines = [];
-  App.itemBuild = { baseModel: '', packaging: '', color: '' };
-  cbBaseModel.setValue(''); cbPackaging.setValue(''); cbColor.setValue('');
-  document.getElementById('itemManualToggle').checked = false;
-  document.getElementById('itemManualInput').value = '';
-  document.getElementById('itemManualInput').disabled = true;
-  document.getElementById('f-customer').value = '';
+  App.items = [];
+  addItem();
+  renderItems();
+  cbCustomer.setValue('');
   document.getElementById('f-poref').value = '';
-  document.getElementById('f-orderQty').value = '';
   document.getElementById('f-orderDate').value = '';
   document.getElementById('f-dueDate').value = '';
   document.getElementById('f-remarks').value = '';
-  document.getElementById('recipeHint').textContent = '';
-  updateItemPreview();
-  renderLines();
+  document.getElementById('loadAllHint').textContent = '';
+  setSchedule(null);
+  renderSummary();
 }
 
-async function saveOrder() {
-  const item = currentItemCode();
-  const msgEl = document.getElementById('saveMsg');
-  if (!App.connected) { toast('กรุณาเชื่อมต่อ Google Sheet ก่อน (เมนู "การเชื่อมต่อ")', 'error'); return; }
-  if (!item) { toast('กรุณากรอกรหัส ITEM ให้ครบก่อนบันทึก', 'error'); return; }
+function collectOrder() {
+  const items = App.items
+    .map((it) => ({ it, code: itemCode(it) }))
+    .filter((x) => x.code)
+    .map(({ it, code }) => ({
+      item: code,
+      baseModel: it.baseModel,
+      packagingCode: it.packaging,
+      colorCode: it.color,
+      orderQty: it.qty,
+      lines: it.lines.map((l) => ({
+        materialCode: l.materialCode,
+        materialName: l.materialName,
+        dept: l.dept,
+        qtyPerFg: l.qtyPerFg,
+        unit: l.unit,
+        stockQty: l.stockQty,
+        requiredQty: requiredQty(l, itemQty(it)),
+        remarks: l.remarks,
+      })),
+    }));
 
-  const order = {
-    item,
-    baseModel: App.itemBuild.baseModel,
-    packagingCode: App.itemBuild.packaging,
-    colorCode: App.itemBuild.color,
-    customer: document.getElementById('f-customer').value,
-    orderQty: document.getElementById('f-orderQty').value,
+  return {
+    customer: cbCustomer.getText(),
+    poRef: document.getElementById('f-poref').value,
     orderDate: document.getElementById('f-orderDate').value,
     dueDate: document.getElementById('f-dueDate').value,
     remarks: document.getElementById('f-remarks').value,
     createdBy: Store.getCreatedBy(),
-    lines: App.lines.map((l) => ({
-      materialCode: l.materialCode,
-      materialName: l.materialName,
-      dept: l.dept,
-      qtyPerFg: l.qtyPerFg,
-      unit: l.unit,
-      stockQty: l.stockQty,
-      requiredQty: requiredQty(l),
-      remarks: l.remarks,
-    })),
+    schedule: App.schedule,
+    items,
   };
+}
+
+async function saveOrder() {
+  const msgEl = document.getElementById('saveMsg');
+  if (!App.connected) { toast('กรุณาเชื่อมต่อ Google Sheet ก่อน (เมนู "การเชื่อมต่อ")', 'error'); return; }
+
+  const order = collectOrder();
+  if (!order.items.length) { toast('กรุณาเลือกรหัส ITEM อย่างน้อย 1 รายการก่อนบันทึก', 'error'); return; }
+
+  const noQty = order.items.filter((i) => !parseFloat(i.orderQty));
+  if (noQty.length && !confirm(`มี ${noQty.length} Item ที่ยังไม่ได้ใส่จำนวนที่สั่ง — บันทึกต่อหรือไม่?`)) {
+    return;
+  }
+
+  if (order.customer) {
+    Store.addLocal('customers', order.customer);
+    mergeCustomer(order.customer);
+    refreshCustomerItems();
+  }
 
   const btn = document.getElementById('saveBtn');
   btn.disabled = true;
@@ -745,7 +1190,7 @@ async function saveOrder() {
   try {
     const res = await Api.saveOrder(order);
     if (!res.ok) throw new Error(res.error || 'unknown error');
-    msgEl.textContent = `บันทึกสำเร็จ (เลขที่: ${res.orderId})`;
+    msgEl.textContent = `บันทึกสำเร็จ (เลขที่: ${res.orderId}) — ${order.items.length} Item`;
     msgEl.className = 'save-bar-msg is-success';
     toast('บันทึก BOM ลง Google Sheet สำเร็จ', 'success');
     resetForm();
@@ -773,10 +1218,62 @@ async function loadHistory() {
     const res = await Api.orders();
     if (!res.ok) throw new Error(res.error);
     historyCache = res;
+    (res.orders || []).forEach((o) => mergeCustomer(o.CUSTOMER));
+    refreshCustomerItems();
     renderHistory();
   } catch (err) {
     listEl.innerHTML = '<div class="history-empty">โหลดประวัติไม่สำเร็จ: ' + err.message + '</div>';
   }
+}
+
+/**
+ * Regroups a saved order into the multi-item shape the form now uses.
+ * Orders saved before items existed have no BOM_Order_Items rows and no
+ * ITEM_NO on their lines, so they collapse into a single item built from
+ * the order header.
+ */
+function orderItemsOf(order) {
+  const itemRows = (historyCache.items || []).filter((r) => r.ORDER_ID === order.ORDER_ID);
+  const lines = (historyCache.lines || []).filter((l) => l.ORDER_ID === order.ORDER_ID);
+
+  if (!itemRows.length) {
+    return [{
+      no: 1,
+      item: order.ITEM || '',
+      baseModel: order.BASE_MODEL || '',
+      packagingCode: order.PACKAGING_CODE || '',
+      colorCode: order.COLOR_CODE || '',
+      orderQty: order.ORDER_QTY || '',
+      lines,
+    }];
+  }
+
+  return itemRows
+    .slice()
+    .sort((a, b) => Number(a.ITEM_NO || 0) - Number(b.ITEM_NO || 0))
+    .map((r) => ({
+      no: Number(r.ITEM_NO || 0),
+      item: r.ITEM || '',
+      baseModel: r.BASE_MODEL || '',
+      packagingCode: r.PACKAGING_CODE || '',
+      colorCode: r.COLOR_CODE || '',
+      orderQty: r.ORDER_QTY || '',
+      lines: lines.filter((l) => Number(l.ITEM_NO || 1) === Number(r.ITEM_NO || 0)),
+    }));
+}
+
+function scheduleOf(order) {
+  const out = {};
+  DEPARTMENTS.forEach((d) => {
+    out[d] = { start: dateValue(order[d + '_START']), end: dateValue(order[d + '_END']) };
+  });
+  return out;
+}
+
+/** Sheet date cells come back as ISO timestamps; <input type="date"> wants yyyy-mm-dd. */
+function dateValue(v) {
+  if (!v) return '';
+  return String(v).slice(0, 10);
 }
 
 function renderHistory() {
@@ -784,16 +1281,10 @@ function renderHistory() {
   if (!historyCache) return;
   const q = document.getElementById('historySearch').value.trim().toLowerCase();
 
-  const linesByOrder = new Map();
-  historyCache.lines.forEach((l) => {
-    if (!linesByOrder.has(l.ORDER_ID)) linesByOrder.set(l.ORDER_ID, []);
-    linesByOrder.get(l.ORDER_ID).push(l);
-  });
-
   let orders = historyCache.orders.slice().sort((a, b) => String(b.TIMESTAMP).localeCompare(String(a.TIMESTAMP)));
   if (q) {
     orders = orders.filter((o) =>
-      [o.ITEM, o.CUSTOMER, o.ORDER_ID, o.BASE_MODEL].some((v) => v && String(v).toLowerCase().includes(q)));
+      [o.ITEM, o.CUSTOMER, o.ORDER_ID, o.BASE_MODEL, o.PO_REF].some((v) => v && String(v).toLowerCase().includes(q)));
   }
 
   listEl.innerHTML = '';
@@ -803,69 +1294,103 @@ function renderHistory() {
   }
 
   orders.forEach((o) => {
-    const item = document.createElement('div');
-    item.className = 'history-item';
+    const items = orderItemsOf(o);
+    const totalQty = items.reduce((s, i) => s + (parseFloat(i.orderQty) || 0), 0);
+
+    const entry = document.createElement('div');
+    entry.className = 'history-item';
+
     const head = document.createElement('div');
     head.className = 'history-item-head';
     head.innerHTML = `
-      <span class="hi-item">${escapeHtml(o.ITEM || '')}</span>
+      <span class="hi-item">${escapeHtml(items.map((i) => i.item).filter(Boolean).join(', ') || o.ITEM || '')}</span>
       <span class="hi-meta">${escapeHtml(o.CUSTOMER || '')}</span>
-      <span class="hi-meta">จำนวน ${escapeHtml(o.ORDER_QTY || '')}</span>
+      <span class="hi-meta">${items.length} Item · รวม ${totalQty.toLocaleString()}</span>
       <span class="hi-meta">${escapeHtml(String(o.TIMESTAMP || '').slice(0, 16).replace('T', ' '))}</span>
       <span class="hi-spacer"></span>
       <button class="btn btn-secondary btn-sm hi-dup">ใช้เป็นแบบร่างใหม่</button>
     `;
     head.querySelector('.hi-dup').addEventListener('click', (e) => {
       e.stopPropagation();
-      duplicateOrder(o, linesByOrder.get(o.ORDER_ID) || []);
+      duplicateOrder(o, items);
     });
-    head.addEventListener('click', () => item.classList.toggle('is-open'));
+    head.addEventListener('click', () => entry.classList.toggle('is-open'));
 
     const body = document.createElement('div');
     body.className = 'history-item-body';
-    const lines = linesByOrder.get(o.ORDER_ID) || [];
-    if (!lines.length) {
-      body.innerHTML = '<div class="history-empty">ไม่มีรายการวัตถุดิบ</div>';
-    } else {
-      const rows = lines.map((l) => `
-        <tr>
-          <td>${escapeHtml(l.MATERIAL_CODE || '')}</td>
-          <td>${escapeHtml(l.MATERIAL_NAME || '')}</td>
-          <td>${escapeHtml(l.QTY_PER_FG || '')}</td>
-          <td>${escapeHtml(l.UNIT || '')}</td>
-          <td>${escapeHtml(l.REQUIRED_QTY || '')}</td>
-        </tr>`).join('');
-      body.innerHTML = `<table>
-        <thead><tr><th>รหัส</th><th>ชื่อวัตถุดิบ</th><th>จำนวน/1FG</th><th>หน่วย</th><th>ต้องเบิก</th></tr></thead>
-        <tbody>${rows}</tbody>
-      </table>`;
-    }
+    const scheduleText = DEPARTMENTS
+      .map((d) => {
+        const s = dateValue(o[d + '_START']);
+        const e = dateValue(o[d + '_END']);
+        return (s || e) ? `${d}: ${s || '—'} → ${e || '—'}` : '';
+      })
+      .filter(Boolean)
+      .join('  |  ');
+    body.innerHTML = scheduleText ? `<div class="history-schedule">${escapeHtml(scheduleText)}</div>` : '';
 
-    item.appendChild(head);
-    item.appendChild(body);
-    listEl.appendChild(item);
+    items.forEach((it) => {
+      const block = document.createElement('div');
+      block.className = 'history-item-block';
+      const title = document.createElement('div');
+      title.className = 'history-item-block-title';
+      title.textContent = `${it.item || '(ไม่มีรหัส)'} — จำนวน ${it.orderQty || '—'}`;
+      block.appendChild(title);
+      if (!it.lines.length) {
+        block.insertAdjacentHTML('beforeend', '<div class="history-empty">ไม่มีรายการวัตถุดิบ</div>');
+      } else {
+        const rows = it.lines.map((l) => `
+          <tr>
+            <td>${escapeHtml(l.MATERIAL_CODE || '')}</td>
+            <td>${escapeHtml(l.MATERIAL_NAME || '')}</td>
+            <td>${escapeHtml(l.QTY_PER_FG || '')}</td>
+            <td>${escapeHtml(l.UNIT || '')}</td>
+            <td>${escapeHtml(l.REQUIRED_QTY || '')}</td>
+          </tr>`).join('');
+        block.insertAdjacentHTML('beforeend', `<table>
+          <thead><tr><th>รหัส</th><th>ชื่อวัตถุดิบ</th><th>จำนวน/1FG</th><th>หน่วย</th><th>ต้องเบิก</th></tr></thead>
+          <tbody>${rows}</tbody>
+        </table>`);
+      }
+      body.appendChild(block);
+    });
+
+    entry.appendChild(head);
+    entry.appendChild(body);
+    listEl.appendChild(entry);
   });
 }
 
-function duplicateOrder(order, lines) {
-  document.querySelectorAll('.nav-btn').forEach((b) => b.classList.toggle('is-active', b.dataset.view === 'new'));
-  document.querySelectorAll('.view').forEach((v) => v.classList.toggle('is-active', v.id === 'view-new'));
+function duplicateOrder(order, items) {
+  showNewBomView();
 
-  document.getElementById('itemManualToggle').checked = true;
-  document.getElementById('itemManualInput').disabled = false;
-  document.getElementById('itemManualInput').value = order.ITEM || '';
-  document.getElementById('f-customer').value = order.CUSTOMER || '';
-  document.getElementById('f-poref').value = '';
-  document.getElementById('f-orderQty').value = order.ORDER_QTY || '';
+  cbCustomer.setValue(order.CUSTOMER || '');
+  document.getElementById('f-poref').value = order.PO_REF || '';
+  document.getElementById('f-orderDate').value = dateValue(order.ORDER_DATE);
+  document.getElementById('f-dueDate').value = dateValue(order.DUE_DATE);
   document.getElementById('f-remarks').value = order.REMARKS || '';
+  setSchedule(scheduleOf(order));
 
-  App.lines = [];
-  lines.forEach((l) => addLine({
-    materialCode: l.MATERIAL_CODE, materialName: l.MATERIAL_NAME, dept: l.DEPT,
-    qtyPerFg: l.QTY_PER_FG, unit: l.UNIT, stockQty: '', remarks: l.REMARKS,
-  }));
-  updateItemPreview();
-  renderLines();
+  App.items = [];
+  items.forEach((src) => {
+    // The saved code is authoritative — reuse it verbatim rather than
+    // trying to recompose it from base/packaging/colour.
+    const it = addItem({
+      baseModel: src.baseModel,
+      packaging: src.packagingCode,
+      color: src.colorCode,
+      manual: true,
+      manualCode: src.item,
+      qty: src.orderQty === '' ? '' : String(src.orderQty),
+    });
+    src.lines.forEach((l) => addLine(it, {
+      materialCode: l.MATERIAL_CODE, materialName: l.MATERIAL_NAME, dept: l.DEPT,
+      qtyPerFg: l.QTY_PER_FG, unit: l.UNIT, stockQty: '', remarks: l.REMARKS,
+    }));
+  });
+  if (!App.items.length) addItem();
+
+  renderItems();
+  renderSummary();
   toast('คัดลอกรายการเดิมมาเป็นแบบร่างใหม่แล้ว — แก้ไขแล้วกดบันทึก', 'success');
 }
 
@@ -900,16 +1425,23 @@ function initSettings() {
 
 function init() {
   initNav();
-  initItemBuilder();
+  initCustomerPicker();
   initSettings();
 
-  document.getElementById('addLineBtn').addEventListener('click', () => { addLine(); renderLines(); });
+  renderSchedule();
+  addItem();
+  renderItems();
+  renderSummary();
+
+  document.getElementById('addItemBtn').addEventListener('click', () => {
+    addItem();
+    renderItems();
+    renderSummary();
+  });
+  document.getElementById('loadAllRecipesBtn').addEventListener('click', loadAllRecipes);
   document.getElementById('saveBtn').addEventListener('click', saveOrder);
-  document.getElementById('f-orderQty').addEventListener('input', recalcAllRequired);
   document.getElementById('refreshHistoryBtn').addEventListener('click', loadHistory);
   document.getElementById('historySearch').addEventListener('input', renderHistory);
-
-  renderLines();
 
   // Reference data and the Sheets connection are independent: the pickers
   // must work even when Apps Script is unreachable.

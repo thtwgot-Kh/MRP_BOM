@@ -145,11 +145,59 @@ html, body {
 
 .item-builder {
   display: grid;
-  grid-template-columns: 2fr 1fr 1fr;
+  grid-template-columns: 2fr 1fr 1fr 1fr;
   gap: 12px;
   margin-bottom: 14px;
 }
 .field-narrow { min-width: 0; }
+
+.title-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+
+/* --- Department schedule --- */
+.schedule-table .dept-cell { font-weight: 700; letter-spacing: .04em; }
+.schedule-table input { max-width: 220px; }
+
+/* --- One card per ordered item, stacked down the page --- */
+.item-list { display: flex; flex-direction: column; gap: 14px; }
+.item-card {
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface-2);
+  padding: 14px;
+}
+.item-card-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-bottom: 12px;
+}
+.item-head-spacer { flex: 1; }
+.item-no {
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--primary);
+  background: var(--primary-tint);
+  border-radius: 999px;
+  padding: 3px 10px;
+}
+.item-card-head .item-code { font-weight: 700; font-size: 14.5px; }
+.item-qty-badge { font-size: 13px; font-weight: 600; color: var(--text); }
+.item-qty-badge.is-missing { font-weight: 400; color: var(--text-muted); }
+
+.item-card .item-preview { background: var(--surface); }
+.item-card .item-builder { margin-bottom: 12px; }
+
+.item-lines { border-top: 1px solid var(--border); padding-top: 12px; }
+.item-lines-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-bottom: 6px;
+}
+.item-lines-title { font-size: 13px; font-weight: 700; color: var(--text-muted); }
+.item-lines .empty-hint { padding: 14px 0 4px; }
 
 .item-preview {
   display: flex;
@@ -297,6 +345,15 @@ html, body {
 .history-item-head .hi-spacer { flex: 1; }
 .history-item-body { padding: 12px 14px; display: none; }
 .history-item.is-open .history-item-body { display: block; }
+.history-schedule {
+  font-size: 12.5px;
+  color: var(--text-muted);
+  padding-bottom: 10px;
+  border-bottom: 1px solid var(--border);
+  margin-bottom: 10px;
+}
+.history-item-block + .history-item-block { margin-top: 12px; }
+.history-item-block-title { font-size: 13px; font-weight: 700; margin-bottom: 4px; }
 .history-item-body table { width: 100%; border-collapse: collapse; font-size: 13px; }
 .history-item-body th { text-align: left; color: var(--text-muted); font-size: 12px; padding: 4px 6px; }
 .history-item-body td { padding: 4px 6px; border-top: 1px solid var(--border); }
@@ -366,8 +423,13 @@ html, body {
 .toast.is-error { background: var(--danger); color: #fff; }
 .toast.is-success { background: var(--success); color: #fff; }
 
+@media (max-width: 960px) {
+  .item-builder { grid-template-columns: 1fr 1fr; }
+}
+
 @media (max-width: 720px) {
   .item-builder, .grid-form { grid-template-columns: 1fr; }
+  .card-title-row { flex-wrap: wrap; gap: 8px; }
   .topbar { gap: 10px; }
   .topbar-status { order: 3; width: 100%; justify-content: flex-end; }
 }
