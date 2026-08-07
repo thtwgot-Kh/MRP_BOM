@@ -28,8 +28,13 @@ recipe_rows = [[norm(r.get(k)) for k in RECIPE_FIELDS] for r in recipe]
 catalog_rows = [[norm(r.get(k)) for k in CATALOG_FIELDS] for r in catalog]
 
 def js_array(rows):
-    # compact JSON, no spaces
-    return json.dumps(rows, ensure_ascii=False, separators=(',', ':'))
+    # One row per line (rather than one giant minified line) so the file is
+    # actually readable/reviewable on GitHub and the row count is visible at
+    # a glance instead of looking like "barely any data".
+    if not rows:
+        return '[]'
+    lines = [json.dumps(r, ensure_ascii=False, separators=(',', ':')) for r in rows]
+    return '[\n' + ',\n'.join('  ' + l for l in lines) + '\n]'
 
 out = []
 out.append("// Auto-generated seed data imported from the legacy MRP workbook (DATA sheet).")
