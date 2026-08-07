@@ -582,101 +582,224 @@ function requiredQty(line, qty) {
   return Math.round(need * 1000) / 1000;
 }
 
+/**
+ * Items are shown twice: as one compact line each in section 3 (so the
+ * whole order is scannable at a glance) and as a materials table each in
+ * section 4. Both halves write into the same it._el, so a code or
+ * quantity typed in the compact row updates the matching table heading.
+ */
 function renderItems() {
-  const host = document.getElementById('itemList');
-  host.innerHTML = '';
-  App.items.forEach((it, index) => host.appendChild(buildItemCard(it, index)));
+  const rowHost = document.getElementById('itemRows');
+  const linesHost = document.getElementById('itemLinesList');
+  rowHost.innerHTML = '';
+  linesHost.innerHTML = '';
+  App.items.forEach((it, index) => {
+    it._el = {};
+    rowHost.appendChild(buildItemRow(it, index));
+    linesHost.appendChild(buildItemLinesBlock(it, index));
+    syncItemLabels(it);
+    renderItemLines(it);
+  });
+  updateLinesSectionHint();
 }
 
-function buildItemCard(it, index) {
-  const card = document.createElement('div');
-  card.className = 'item-card';
-  card.dataset.itemId = it.itemId;
+/** Keeps every place an item's code/quantity is displayed in agreement. */
+function syncItemLabels(it) {
+  const el = it._el;
+  if (!el) return;
+  const code = itemCode(it);
+  const qty = itemQty(it);
+  if (el.rowCode) {
+    // Only worth a line of its own when it says something the inputs on
+    // the row don't already show verbatim — i.e. once packaging/colour
+    // compose the base model into a different code.
+    const showCode = !!code && code !== it.baseModel && code !== (it.manualCode || '').trim();
+    el.rowCode.textContent = showCode ? code : '';
+    el.rowSub.hidden = !showCode && !it.hint;
+  }
+  if (el.blockTitle) {
+    el.blockTitle.textContent = `${el.blockNo} · ${code || '(ยังไม่เลือกรหัส)'}`;
+  }
+  if (el.blockQty) {
+    el.blockQty.textContent = qty ? '× ' + qty.toLocaleString() : 'ยังไม่ระบุจำนวน';
+    el.blockQty.classList.toggle('is-missing', !qty);
+  }
+}
 
-  /* --- head: index, resolved code, quantity badge, remove --- */
-  const head = document.createElement('div');
-  head.className = 'item-card-head';
+function buildItemRow(it, index) {
+  const row = document.createElement('div');
+  row.className = 'item-row';
+  row.dataset.itemId = it.itemId;
+
+  const cellNo = cell(row, '');
   const no = document.createElement('span');
   no.className = 'item-no';
-  no.textContent = 'Item ' + (index + 1);
-  const codeEl = document.createElement('code');
-  codeEl.className = 'item-code';
-  const qtyBadge = document.createElement('span');
-  qtyBadge.className = 'item-qty-badge';
-  const spacer = document.createElement('span');
-  spacer.className = 'item-head-spacer';
-  const delBtn = document.createElement('button');
-  delBtn.className = 'btn-danger-ghost';
-  delBtn.textContent = '✕';
-  delBtn.title = 'ลบ Item นี้';
-  delBtn.addEventListener('click', () => removeItem(it.itemId));
-  head.append(no, codeEl, qtyBadge, spacer, delBtn);
-  card.appendChild(head);
+  no.textContent = index + 1;
+  cellNo.appendChild(no);
 
-  /* --- builder: base model + packaging + colour + ordered quantity --- */
-  const builder = document.createElement('div');
-  builder.className = 'item-builder';
-  const mountBase = fieldWithMount(builder, 'รุ่นสินค้า (Base Model)');
-  const mountPkg = fieldWithMount(builder, 'Packaging', 'field-narrow');
-  const mountColor = fieldWithMount(builder, 'เฉดสี (Color Set)', 'field-narrow');
+  const cellBase = cell(row, 'รุ่นสินค้า');
+  const cellPkg = cell(row, 'Packaging');
+  const cellColor = cell(row, 'เฉดสี');
+  const mountBase = mountIn(cellBase);
+  const mountPkg = mountIn(cellPkg);
+  const mountColor = mountIn(cellColor);
 
-  const qtyField = document.createElement('div');
-  qtyField.className = 'field field-narrow';
-  const qtyLabel = document.createElement('label');
-  qtyLabel.textContent = 'จำนวนที่สั่ง (FG)';
+  // Typing a full code by hand replaces the three pickers on this line.
+  const manualInput = document.createElement('input');
+  manualInput.type = 'text';
+  manualInput.className = 'item-row-manual';
+  manualInput.placeholder = 'พิมพ์รหัส ITEM แบบเต็ม';
+  manualInput.value = it.manualCode;
+  row.appendChild(manualInput);
+
+  const cellQty = cell(row, 'จำนวนที่สั่ง');
   const qtyInput = document.createElement('input');
   qtyInput.type = 'number';
   qtyInput.min = '0';
   qtyInput.step = 'any';
   qtyInput.placeholder = '0';
   qtyInput.value = it.qty;
-  qtyField.append(qtyLabel, qtyInput);
-  builder.appendChild(qtyField);
-  card.appendChild(builder);
+  cellQty.appendChild(qtyInput);
 
-  /* --- resolved item code + manual override --- */
-  const preview = document.createElement('div');
-  preview.className = 'item-preview';
-  const previewLabel = document.createElement('span');
-  previewLabel.className = 'item-preview-label';
-  previewLabel.textContent = 'รหัส ITEM ที่จะบันทึก:';
-  const previewCode = document.createElement('code');
-  const manualToggleLabel = document.createElement('label');
-  manualToggleLabel.className = 'manual-toggle';
-  const manualToggle = document.createElement('input');
-  manualToggle.type = 'checkbox';
-  manualToggle.checked = it.manual;
-  manualToggleLabel.append(manualToggle, document.createTextNode(' แก้ไขรหัสเอง'));
-  const manualInput = document.createElement('input');
-  manualInput.type = 'text';
-  manualInput.className = 'item-manual-input';
-  manualInput.placeholder = 'พิมพ์รหัส ITEM แบบเต็ม';
-  manualInput.value = it.manualCode;
-  manualInput.disabled = !it.manual;
-  preview.append(previewLabel, previewCode, manualToggleLabel, manualInput);
-  card.appendChild(preview);
+  // Grouped so narrow screens can move both buttons up next to the item
+  // number; on wide screens the wrapper is `display: contents` and they sit
+  // in their own grid columns.
+  const actions = document.createElement('div');
+  actions.className = 'item-row-actions';
+  const manualBtn = document.createElement('button');
+  manualBtn.className = 'icon-btn';
+  manualBtn.textContent = '✎';
+  manualBtn.title = 'พิมพ์รหัส ITEM เอง';
+  const delBtn = document.createElement('button');
+  delBtn.className = 'btn-danger-ghost';
+  delBtn.textContent = '✕';
+  delBtn.title = 'ลบ Item นี้';
+  delBtn.addEventListener('click', () => removeItem(it.itemId));
+  actions.append(manualBtn, delBtn);
+  row.appendChild(actions);
 
-  /* --- this item's BOM lines --- */
-  const linesBox = document.createElement('div');
-  linesBox.className = 'item-lines';
-  const linesHead = document.createElement('div');
-  linesHead.className = 'item-lines-head';
-  const linesTitle = document.createElement('span');
-  linesTitle.className = 'item-lines-title';
+  const sub = document.createElement('div');
+  sub.className = 'item-row-sub';
+  const rowCode = document.createElement('code');
+  rowCode.className = 'item-row-code';
   const hintEl = document.createElement('span');
   hintEl.className = 'hint-inline';
   hintEl.textContent = it.hint;
-  const linesSpacer = document.createElement('span');
-  linesSpacer.className = 'item-head-spacer';
-  const loadBtn = document.createElement('button');
-  loadBtn.className = 'btn btn-secondary btn-sm';
-  loadBtn.textContent = 'โหลดสูตรของ Item นี้';
-  const addLineBtn = document.createElement('button');
-  addLineBtn.className = 'btn btn-primary btn-sm';
-  addLineBtn.textContent = '+ เพิ่มรายการวัตถุดิบ';
-  linesHead.append(linesTitle, hintEl, linesSpacer, loadBtn, addLineBtn);
-  linesBox.appendChild(linesHead);
+  sub.append(rowCode, hintEl);
+  row.appendChild(sub);
 
+  it._el.rowCode = rowCode;
+  it._el.rowSub = sub;
+  it._el.hintEl = hintEl;
+
+  const applyManualMode = () => {
+    row.classList.toggle('is-manual', it.manual);
+    manualBtn.classList.toggle('is-active', it.manual);
+    manualBtn.title = it.manual ? 'กลับไปเลือกจากรายการ' : 'พิมพ์รหัส ITEM เอง';
+  };
+
+  it._cb = {
+    base: new Combobox(mountBase, {
+      placeholder: 'ค้นหาหรือพิมพ์รุ่นสินค้าใหม่...',
+      items: baseModelItems(),
+      allowCreate: true,
+      createLabel: (q) => `+ เพิ่มรุ่นสินค้าใหม่: "${q}"`,
+      onSelect: (sel) => {
+        it.baseModel = sel.value;
+        if (sel.__created) ensureLookupCreated('baseModel', sel.value);
+        syncItemLabels(it);
+      },
+    }),
+    packaging: new Combobox(mountPkg, {
+      placeholder: 'P, B, X...',
+      items: packagingItems(),
+      allowCreate: true,
+      createLabel: (q) => `+ เพิ่มรหัส Packaging ใหม่: "${q}"`,
+      onSelect: (sel) => {
+        it.packaging = sel.value;
+        if (sel.__created) ensureLookupCreated('packaging', sel.value);
+        syncItemLabels(it);
+      },
+    }),
+    color: new Combobox(mountColor, {
+      placeholder: 'A, Y, Z...',
+      items: colorItems(),
+      allowCreate: true,
+      createLabel: (q) => `+ เพิ่มเฉดสีใหม่: "${q}"`,
+      onSelect: (sel) => {
+        it.color = sel.value;
+        if (sel.__created) ensureLookupCreated('color', sel.value);
+        syncItemLabels(it);
+      },
+    }),
+  };
+  it._cb.base.setValue(it.baseModel);
+  it._cb.packaging.setValue(it.packaging);
+  it._cb.color.setValue(it.color);
+
+  qtyInput.addEventListener('input', (e) => {
+    it.qty = e.target.value;
+    syncItemLabels(it);
+    recalcItem(it);
+    renderSummary();
+  });
+  manualInput.addEventListener('input', (e) => { it.manualCode = e.target.value; syncItemLabels(it); });
+  manualBtn.addEventListener('click', () => {
+    it.manual = !it.manual;
+    applyManualMode();
+    if (it.manual) manualInput.focus();
+    syncItemLabels(it);
+  });
+
+  applyManualMode();
+  return row;
+}
+
+function cell(parent, label) {
+  const el = document.createElement('div');
+  el.className = 'item-cell';
+  if (label) el.dataset.label = label;
+  parent.appendChild(el);
+  return el;
+}
+
+function mountIn(parent) {
+  const mount = document.createElement('div');
+  mount.className = 'combobox-mount';
+  parent.appendChild(mount);
+  return mount;
+}
+
+function buildItemLinesBlock(it, index) {
+  const block = document.createElement('div');
+  block.className = 'item-lines-block';
+  block.dataset.itemId = it.itemId;
+
+  const head = document.createElement('div');
+  head.className = 'item-lines-head';
+  const caret = document.createElement('span');
+  caret.className = 'caret';
+  caret.textContent = '▾';
+  const title = document.createElement('span');
+  title.className = 'item-lines-title';
+  const qtyBadge = document.createElement('span');
+  qtyBadge.className = 'item-qty-badge';
+  const count = document.createElement('span');
+  count.className = 'item-lines-count';
+  const spacer = document.createElement('span');
+  spacer.className = 'item-head-spacer';
+  const addLineBtn = document.createElement('button');
+  addLineBtn.className = 'btn btn-secondary btn-sm';
+  addLineBtn.textContent = '+ เพิ่มรายการวัตถุดิบ';
+  head.append(caret, title, qtyBadge, count, spacer, addLineBtn);
+  head.addEventListener('click', (e) => {
+    if (e.target === addLineBtn) return;
+    block.classList.toggle('is-collapsed');
+  });
+  block.appendChild(head);
+
+  const body = document.createElement('div');
+  body.className = 'item-lines-body';
   const wrap = document.createElement('div');
   wrap.className = 'table-wrap';
   const table = document.createElement('table');
@@ -694,112 +817,43 @@ function buildItemCard(it, index) {
   const tbody = document.createElement('tbody');
   table.appendChild(tbody);
   wrap.appendChild(table);
-  linesBox.appendChild(wrap);
+  body.appendChild(wrap);
   const emptyHint = document.createElement('p');
   emptyHint.className = 'empty-hint';
-  emptyHint.textContent = 'ยังไม่มีรายการวัตถุดิบ — กด "เพิ่มรายการวัตถุดิบ" หรือโหลดสูตรจากระบบเดิม';
-  linesBox.appendChild(emptyHint);
-  card.appendChild(linesBox);
+  emptyHint.textContent = 'ยังไม่มีรายการวัตถุดิบสำหรับ Item นี้';
+  body.appendChild(emptyHint);
+  block.appendChild(body);
 
-  /* --- wiring --- */
-  it._el = { card, codeEl, qtyBadge, previewCode, tbody, emptyHint, hintEl, linesTitle, loadBtn };
-
-  const syncCode = () => {
-    const code = itemCode(it);
-    codeEl.textContent = code || '—';
-    previewCode.textContent = code || '—';
-    loadBtn.disabled = !code;
-  };
-  const syncQty = () => {
-    const q = itemQty(it);
-    qtyBadge.textContent = q ? '× ' + q.toLocaleString() : 'ยังไม่ระบุจำนวน';
-    qtyBadge.classList.toggle('is-missing', !q);
-  };
-
-  it._cb = {
-    base: new Combobox(mountBase, {
-      placeholder: 'ค้นหาหรือพิมพ์รุ่นสินค้าใหม่...',
-      items: baseModelItems(),
-      allowCreate: true,
-      createLabel: (q) => `+ เพิ่มรุ่นสินค้าใหม่: "${q}"`,
-      onSelect: (sel) => {
-        it.baseModel = sel.value;
-        if (sel.__created) ensureLookupCreated('baseModel', sel.value);
-        syncCode();
-      },
-    }),
-    packaging: new Combobox(mountPkg, {
-      placeholder: 'เช่น P, B, X, C...',
-      items: packagingItems(),
-      allowCreate: true,
-      createLabel: (q) => `+ เพิ่มรหัส Packaging ใหม่: "${q}"`,
-      onSelect: (sel) => {
-        it.packaging = sel.value;
-        if (sel.__created) ensureLookupCreated('packaging', sel.value);
-        syncCode();
-      },
-    }),
-    color: new Combobox(mountColor, {
-      placeholder: 'เช่น A, Y, Z...',
-      items: colorItems(),
-      allowCreate: true,
-      createLabel: (q) => `+ เพิ่มเฉดสีใหม่: "${q}"`,
-      onSelect: (sel) => {
-        it.color = sel.value;
-        if (sel.__created) ensureLookupCreated('color', sel.value);
-        syncCode();
-      },
-    }),
-  };
-  it._cb.base.setValue(it.baseModel);
-  it._cb.packaging.setValue(it.packaging);
-  it._cb.color.setValue(it.color);
-
-  qtyInput.addEventListener('input', (e) => {
-    it.qty = e.target.value;
-    syncQty();
-    recalcItem(it);
-    renderSummary();
-  });
-
-  manualToggle.addEventListener('change', (e) => {
-    it.manual = e.target.checked;
-    manualInput.disabled = !it.manual;
-    syncCode();
-  });
-  manualInput.addEventListener('input', (e) => { it.manualCode = e.target.value; syncCode(); });
-
-  loadBtn.addEventListener('click', () => loadRecipeForItem(it, { confirmReplace: true }));
   addLineBtn.addEventListener('click', () => {
+    block.classList.remove('is-collapsed');
     addLine(it);
     renderItemLines(it);
     renderSummary();
   });
 
-  syncCode();
-  syncQty();
-  renderItemLines(it);
-  return card;
+  it._el.blockNo = 'Item ' + (index + 1);
+  it._el.blockTitle = title;
+  it._el.blockQty = qtyBadge;
+  it._el.blockCount = count;
+  it._el.tbody = tbody;
+  it._el.emptyHint = emptyHint;
+  return block;
 }
 
-function fieldWithMount(parent, labelText, extraClass) {
-  const field = document.createElement('div');
-  field.className = 'field' + (extraClass ? ' ' + extraClass : '');
-  const label = document.createElement('label');
-  label.textContent = labelText;
-  const mount = document.createElement('div');
-  mount.className = 'combobox-mount';
-  field.append(label, mount);
-  parent.appendChild(field);
-  return mount;
+/** Section 4 stays hidden-ish until there is anything to show. */
+function updateLinesSectionHint() {
+  const total = App.items.reduce((n, it) => n + it.lines.length, 0);
+  document.getElementById('linesEmptyHint').style.display = total ? 'none' : 'block';
+  document.getElementById('itemLinesList').style.display = total ? 'flex' : 'none';
+  document.getElementById('linesHint').textContent = total ? `รวม ${total} รายการ` : '';
 }
 
 function renderItemLines(it) {
-  if (!it._el) return;
-  const { tbody, emptyHint, linesTitle } = it._el;
+  if (!it._el || !it._el.tbody) return;
+  const { tbody, emptyHint, blockCount } = it._el;
   tbody.innerHTML = '';
   emptyHint.style.display = it.lines.length ? 'none' : 'block';
-  linesTitle.textContent = `รายการวัตถุดิบ (${it.lines.length})`;
+  blockCount.textContent = `${it.lines.length} รายการ`;
 
   it.lines.forEach((line) => {
     const tr = document.createElement('tr');
@@ -918,6 +972,8 @@ function renderItemLines(it) {
     updateRequiredCell(tr, line, itemQty(it));
     tbody.appendChild(tr);
   });
+
+  updateLinesSectionHint();
 }
 
 function updateRequiredCell(tr, line, qty) {
@@ -955,16 +1011,17 @@ function resolveRecipeId(it) {
 
 function setItemHint(it, text) {
   it.hint = text;
-  if (it._el) it._el.hintEl.textContent = text;
+  if (!it._el || !it._el.hintEl) return;
+  it._el.hintEl.textContent = text;
+  syncItemLabels(it); // the sub-line may need to appear for the hint
 }
 
 /**
- * Pulls one item's legacy recipe in. Returns a short status string used to
- * summarise a bulk load. `confirmReplace` is off during a bulk load so the
- * user gets a single confirmation instead of one per item.
+ * Pulls one item's legacy recipe in. Returns a short status string that the
+ * single bulk loader below rolls up into one message — the confirmation to
+ * overwrite is asked once there, not per item.
  */
-async function loadRecipeForItem(it, opts) {
-  const options = opts || {};
+async function loadRecipeForItem(it) {
   const code = itemCode(it);
   if (!code) {
     setItemHint(it, 'ยังไม่ได้เลือกรหัส ITEM');
@@ -973,13 +1030,8 @@ async function loadRecipeForItem(it, opts) {
 
   const found = resolveRecipeId(it);
   if (!found) {
-    setItemHint(it, 'ไม่พบสูตรวัตถุดิบเดิมสำหรับรหัสนี้ในระบบเก่า — เพิ่มรายการเองได้ด้านล่าง');
+    setItemHint(it, 'ไม่พบสูตรเดิมของรหัสนี้ — เพิ่มรายการเองได้ในหัวข้อ 4');
     return 'notfound';
-  }
-
-  if (options.confirmReplace && it.lines.length &&
-      !confirm(`Item "${code}" มีรายการวัตถุดิบอยู่แล้ว — แทนที่ด้วยสูตรจากระบบเดิมหรือไม่?`)) {
-    return 'skipped';
   }
 
   setItemHint(it, 'กำลังโหลดสูตรวัตถุดิบเดิม...');
@@ -992,7 +1044,7 @@ async function loadRecipeForItem(it, opts) {
   }
 
   if (!rows || !rows.length) {
-    setItemHint(it, 'ไม่พบสูตรวัตถุดิบเดิมสำหรับรหัสนี้ในระบบเก่า — เพิ่มรายการเองได้ด้านล่าง');
+    setItemHint(it, 'ไม่พบสูตรเดิมของรหัสนี้ — เพิ่มรายการเองได้ในหัวข้อ 4');
     return 'notfound';
   }
 

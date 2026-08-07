@@ -157,47 +157,134 @@ html, body {
 .schedule-table .dept-cell { font-weight: 700; letter-spacing: .04em; }
 .schedule-table input { max-width: 220px; }
 
-/* --- One card per ordered item, stacked down the page --- */
-.item-list { display: flex; flex-direction: column; gap: 14px; }
-.item-card {
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  background: var(--surface-2);
-  padding: 14px;
-}
-.item-card-head {
-  display: flex;
+/* --- Ordered items: one compact line each, so a whole order fits on
+       screen and can be checked at a glance --- */
+.item-rows { display: flex; flex-direction: column; gap: 8px; }
+.item-rows-head,
+.item-row {
+  display: grid;
+  grid-template-columns: 34px minmax(0, 2.4fr) minmax(0, .9fr) minmax(0, .9fr) minmax(0, 1fr) 36px 34px;
+  gap: 8px;
   align-items: center;
-  gap: 10px;
-  flex-wrap: wrap;
-  margin-bottom: 12px;
 }
-.item-head-spacer { flex: 1; }
+.item-rows-head {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-muted);
+  padding: 0 2px 2px;
+}
+.item-row {
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 8px;
+}
+.item-cell { min-width: 0; }
+.item-cell input {
+  width: 100%;
+  font-family: var(--font);
+  font-size: 14px;
+  padding: 9px 11px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+  color: var(--text);
+}
+.item-cell input:focus { outline: none; border-color: var(--primary); box-shadow: 0 0 0 3px var(--primary-tint); }
 .item-no {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 26px;
+  height: 26px;
   font-size: 12px;
   font-weight: 700;
   color: var(--primary);
   background: var(--primary-tint);
   border-radius: 999px;
-  padding: 3px 10px;
+  padding: 0 8px;
 }
-.item-card-head .item-code { font-weight: 700; font-size: 14.5px; }
-.item-qty-badge { font-size: 13px; font-weight: 600; color: var(--text); }
-.item-qty-badge.is-missing { font-weight: 400; color: var(--text-muted); }
 
-.item-card .item-preview { background: var(--surface); }
-.item-card .item-builder { margin-bottom: 12px; }
+/* Manual code entry takes over the three picker columns on its line. */
+.item-row-manual {
+  display: none;
+  grid-column: 2 / 5;
+  width: 100%;
+  font-family: var(--font);
+  font-size: 14px;
+  padding: 9px 11px;
+  border: 1px solid var(--primary);
+  border-radius: 8px;
+  background: var(--surface);
+  color: var(--text);
+}
+.item-row.is-manual .item-row-manual { display: block; }
+.item-row.is-manual .item-cell[data-label="รุ่นสินค้า"],
+.item-row.is-manual .item-cell[data-label="Packaging"],
+.item-row.is-manual .item-cell[data-label="เฉดสี"] { display: none; }
 
-.item-lines { border-top: 1px solid var(--border); padding-top: 12px; }
+.item-row-actions { display: contents; }
+.icon-btn {
+  font-family: var(--font);
+  font-size: 15px;
+  line-height: 1;
+  min-width: 36px;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--text-muted);
+  border-radius: 8px;
+  padding: 8px 0;
+  cursor: pointer;
+}
+.icon-btn:hover { color: var(--text); border-color: var(--text-muted); }
+.icon-btn.is-active { background: var(--primary-tint); border-color: var(--primary); color: var(--primary); }
+
+.item-row-sub {
+  grid-column: 2 / -1;
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.item-row-sub[hidden] { display: none; }
+.item-row-code { font-size: 13px; font-weight: 700; color: var(--primary); }
+.item-row-sub .hint-inline { margin-left: 0; }
+
+.add-item-btn { margin-top: 10px; }
+.load-all-bar {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex-wrap: wrap;
+  margin-top: 14px;
+  padding-top: 14px;
+  border-top: 1px solid var(--border);
+}
+
+/* --- Section 4: one materials table per item --- */
+.item-lines-list { display: flex; flex-direction: column; gap: 12px; }
+.item-lines-block { border: 1px solid var(--border); border-radius: 8px; }
 .item-lines-head {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 10px;
   flex-wrap: wrap;
-  margin-bottom: 6px;
+  padding: 10px 12px;
+  background: var(--surface-2);
+  border-radius: 8px 8px 0 0;
+  cursor: pointer;
 }
-.item-lines-title { font-size: 13px; font-weight: 700; color: var(--text-muted); }
-.item-lines .empty-hint { padding: 14px 0 4px; }
+.item-lines-head .caret { color: var(--text-muted); font-size: 12px; }
+.item-lines-block.is-collapsed .caret { transform: rotate(-90deg); display: inline-block; }
+.item-lines-block.is-collapsed .item-lines-body { display: none; }
+.item-lines-block.is-collapsed .item-lines-head { border-radius: 8px; }
+.item-lines-title { font-size: 13.5px; font-weight: 700; }
+.item-lines-count { font-size: 12.5px; color: var(--text-muted); }
+.item-head-spacer { flex: 1; }
+.item-qty-badge { font-size: 13px; font-weight: 600; color: var(--text); }
+.item-qty-badge.is-missing { font-weight: 400; color: var(--text-muted); }
+.item-lines-body { padding: 4px 12px 8px; }
+.item-lines-body .empty-hint { padding: 14px 0 6px; }
 
 .item-preview {
   display: flex;
@@ -423,8 +510,33 @@ html, body {
 .toast.is-error { background: var(--danger); color: #fff; }
 .toast.is-success { background: var(--success); color: #fff; }
 
-@media (max-width: 960px) {
-  .item-builder { grid-template-columns: 1fr 1fr; }
+/* Below this the compact grid stops fitting, so each item line becomes a
+   small stacked block and the column header row is replaced by per-field
+   labels. */
+@media (max-width: 860px) {
+  .item-rows-head { display: none; }
+  .item-row { grid-template-columns: 1fr 1fr; }
+  .item-cell[data-label]::before {
+    content: attr(data-label);
+    display: block;
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--text-muted);
+    margin-bottom: 4px;
+  }
+  .item-cell[data-label="รุ่นสินค้า"] { grid-column: 1 / -1; }
+  .item-row-manual { grid-column: 1 / -1; }
+  /* Item number and both action buttons share the first line. */
+  .item-row > .item-cell:first-child { grid-column: 1; grid-row: 1; }
+  .item-row-actions {
+    display: flex;
+    gap: 6px;
+    align-items: center;
+    grid-column: 2;
+    grid-row: 1;
+    justify-self: end;
+  }
+  .item-row-sub { grid-column: 1 / -1; }
 }
 
 @media (max-width: 720px) {

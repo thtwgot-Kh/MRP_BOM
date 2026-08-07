@@ -80,24 +80,43 @@
       </div>
 
       <div class="card">
-        <div class="card-title-row">
-          <h2 class="card-title">3. รหัสสินค้า (ITEM)</h2>
-          <div class="title-actions">
-            <button class="btn btn-secondary btn-sm" id="loadAllRecipesBtn">โหลดสูตรวัตถุดิบทุก Item</button>
-            <button class="btn btn-primary btn-sm" id="addItemBtn">+ เพิ่ม Item</button>
-          </div>
-        </div>
+        <h2 class="card-title">3. รหัสสินค้า (ITEM)</h2>
         <p class="card-hint">
-          ประกอบรหัสจาก รุ่นสินค้า + Packaging + เฉดสี แล้วใส่จำนวนที่สั่งต่อท้าย —
-          กด "+ เพิ่ม Item" เพื่อสั่งผลิตหลายตัวในคำสั่งเดียว แล้วกด "โหลดสูตรวัตถุดิบทุก Item" ครั้งเดียวเพื่อดึงสูตรเดิมและคำนวณให้พร้อมกัน
+          หนึ่งบรรทัด = หนึ่ง Item — เลือก รุ่นสินค้า + Packaging + เฉดสี แล้วใส่จำนวนที่สั่งต่อท้าย
+          กด "+ เพิ่ม Item" เพื่อต่อบรรทัดลงมาเรื่อย ๆ เมื่อครบทุก Item แล้วค่อยกดปุ่มโหลดสูตรด้านล่างครั้งเดียว
         </p>
-        <div id="itemList" class="item-list"></div>
-        <p class="hint-inline" id="loadAllHint"></p>
+        <div class="item-rows">
+          <div class="item-rows-head">
+            <span></span>
+            <span>รุ่นสินค้า (Base Model)</span>
+            <span>Packaging</span>
+            <span>เฉดสี (Color Set)</span>
+            <span>จำนวนที่สั่ง</span>
+            <span></span>
+            <span></span>
+          </div>
+          <div id="itemRows"></div>
+        </div>
+        <button class="btn btn-secondary btn-sm add-item-btn" id="addItemBtn">+ เพิ่ม Item</button>
+        <div class="load-all-bar">
+          <button class="btn btn-primary" id="loadAllRecipesBtn">โหลดสูตรวัตถุดิบทุก Item (ถ้ามี)</button>
+          <span class="hint-inline" id="loadAllHint"></span>
+        </div>
       </div>
 
       <div class="card">
         <div class="card-title-row">
-          <h2 class="card-title">4. สรุปวัตถุดิบรวมทั้งคำสั่งผลิต</h2>
+          <h2 class="card-title">4. รายการวัตถุดิบแต่ละ Item</h2>
+          <span class="hint-inline" id="linesHint"></span>
+        </div>
+        <p class="card-hint">แก้ไข/เพิ่ม/ลบได้อิสระ — กดหัวข้อของ Item เพื่อย่อ/ขยายตาราง</p>
+        <div id="itemLinesList" class="item-lines-list"></div>
+        <p class="empty-hint" id="linesEmptyHint">ยังไม่มีรายการวัตถุดิบ — เลือก Item ด้านบนแล้วกด "โหลดสูตรวัตถุดิบทุก Item"</p>
+      </div>
+
+      <div class="card">
+        <div class="card-title-row">
+          <h2 class="card-title">5. สรุปวัตถุดิบรวมทั้งคำสั่งผลิต</h2>
           <span class="hint-inline" id="summaryHint"></span>
         </div>
         <p class="card-hint">รวมความต้องการวัตถุดิบของทุก Item เข้าด้วยกัน (วัตถุดิบรหัสเดียวกันที่ใช้หลาย Item จะถูกบวกรวม)</p>
