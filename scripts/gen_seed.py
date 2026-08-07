@@ -5,7 +5,15 @@ with open('/home/user/MRP_BOM/data/bom_master.json', encoding='utf-8') as f:
 with open('/home/user/MRP_BOM/data/materials_catalog.json', encoding='utf-8') as f:
     catalog = json.load(f)
 with open('/home/user/MRP_BOM/data/fg_base_items.json', encoding='utf-8') as f:
-    base_items = json.load(f)
+    new_style_base_items = json.load(f)
+
+# The searchable "base model" list combines the new Base(Pkg)-Color naming
+# (from the sample order file) with every legacy ITEM code from the old MRP
+# DATA sheet (recipe.item) — otherwise only ~20 items were searchable while
+# 884 legacy FG codes stayed invisible in the picker even though their
+# recipes were already loaded into BOM_Master.
+legacy_items = sorted(set(r['item'] for r in recipe if r.get('item')))
+base_items = sorted(set(legacy_items) | set(new_style_base_items))
 
 # order of keys for compact arrays
 RECIPE_FIELDS = ['item','code','dept','formula','seColor','seLength','hole','outerSE','outerRB',

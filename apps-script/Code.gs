@@ -57,6 +57,7 @@ function onOpen() {
   SpreadsheetApp.getUi()
     .createMenu('BOM App')
     .addItem('Initialize / Re-seed sheets', 'initializeSheet')
+    .addItem('Add missing base items from SeedData', 'mergeMissingBaseItems')
     .addToUi();
 }
 
@@ -84,6 +85,25 @@ function seedIfEmpty_(sheetName, rows) {
   var sh = getOrCreateSheet_(sheetName);
   if (sh.getLastRow() > 1 || !rows || !rows.length) return;
   sh.getRange(2, 1, rows.length, rows[0].length).setValues(rows);
+}
+
+/**
+ * Adds any base model / item codes from SeedData.gs that aren't already in
+ * FG_Base_Items yet, without touching existing rows. Safe to re-run any
+ * time SeedData.gs is updated with more codes (unlike initializeSheet(),
+ * which only seeds a tab the first time it's empty).
+ */
+function mergeMissingBaseItems() {
+  var sh = getOrCreateSheet_(SHEETS.BASE_ITEMS);
+  var existing = sheetToObjects_(SHEETS.BASE_ITEMS).map(function (r) { return r.NAME; });
+  var existingSet = {};
+  existing.forEach(function (n) { existingSet[n] = true; });
+
+  var missing = SEED_FG_BASE_ITEMS.filter(function (n) { return !existingSet[n]; });
+  if (missing.length) {
+    sh.getRange(sh.getLastRow() + 1, 1, missing.length, 1).setValues(missing.map(function (n) { return [n]; }));
+  }
+  return 'Added ' + missing.length + ' new base item(s), ' + existing.length + ' already present.';
 }
 
 function sheetToObjects_(sheetName) {
