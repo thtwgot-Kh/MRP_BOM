@@ -23,7 +23,12 @@ const Api = {
     const url = new URL(Store.getScriptUrl());
     url.searchParams.set('action', action);
     Object.entries(params || {}).forEach(([k, v]) => url.searchParams.set(k, v));
-    const res = await fetch(url.toString(), { method: 'GET' });
+    // Apps Script GET responses (served via script.googleusercontent.com)
+    // can get cached by the browser keyed on the exact URL, so a stale
+    // bootstrap/orders payload can stick around even after the sheet
+    // changes. A cache-busting param plus no-store forces a fresh fetch.
+    url.searchParams.set('_ts', Date.now());
+    const res = await fetch(url.toString(), { method: 'GET', cache: 'no-store' });
     if (!res.ok) throw new Error('HTTP ' + res.status);
     return res.json();
   },
