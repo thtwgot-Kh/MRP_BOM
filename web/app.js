@@ -1,9 +1,16 @@
 'use strict';
 
-/* ============================== Storage ============================== */
+/* ============================== Storage ==============================
+ * DEFAULT_SCRIPT_URL pre-connects everyone who opens this site to the
+ * shared BOM Google Sheet, so no one has to paste the Apps Script URL by
+ * hand. Update it here (and redeploy) if the Apps Script is ever
+ * redeployed under a new URL.
+ */
+
+const DEFAULT_SCRIPT_URL = 'https://script.google.com/macros/s/AKfycbwQdBaq0FAH7C6Uj7r7LHL1VCuqLQxqaU1IMHKRLrtFU7EDMl9---Bf5ukckOhbL7RRsA/exec';
 
 const Store = {
-  getScriptUrl: () => localStorage.getItem('bomapp.scriptUrl') || '',
+  getScriptUrl: () => localStorage.getItem('bomapp.scriptUrl') || DEFAULT_SCRIPT_URL,
   setScriptUrl: (v) => localStorage.setItem('bomapp.scriptUrl', v),
   getCreatedBy: () => localStorage.getItem('bomapp.createdBy') || '',
   setCreatedBy: (v) => localStorage.setItem('bomapp.createdBy', v),
@@ -788,10 +795,6 @@ function init() {
 
   renderLines();
   connect();
-
-  if (!Store.getScriptUrl()) {
-    document.querySelector('.nav-btn[data-view="settings"]').click();
-  }
 }
 
 document.addEventListener('DOMContentLoaded', init);
