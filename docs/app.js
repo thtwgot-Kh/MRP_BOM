@@ -402,10 +402,12 @@ async function loadRecipeFromMaster() {
   let rows;
   try {
     let res = await Api.recipe(item);
-    rows = res.ok ? res.rows : [];
+    if (!res.ok) throw new Error(res.error || 'unknown API error');
+    rows = res.rows;
     if ((!rows || !rows.length) && App.itemBuild.baseModel && App.itemBuild.baseModel !== item) {
       res = await Api.recipe(App.itemBuild.baseModel);
-      rows = res.ok ? res.rows : [];
+      if (!res.ok) throw new Error(res.error || 'unknown API error');
+      rows = res.rows;
     }
   } catch (err) {
     hint.textContent = 'ค้นหาสูตรวัตถุดิบไม่สำเร็จ: ' + err.message;
