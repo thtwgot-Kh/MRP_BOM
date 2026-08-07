@@ -9,11 +9,35 @@
 
 const DEFAULT_SCRIPT_URL = 'https://script.google.com/macros/s/AKfycbwQdBaq0FAH7C6Uj7r7LHL1VCuqLQxqaU1IMHKRLrtFU7EDMl9---Bf5ukckOhbL7RRsA/exec';
 
+const EMPTY_ADDITIONS = { baseItems: [], packagingCodes: [], colorShades: [], materials: [] };
+
 const Store = {
   getScriptUrl: () => localStorage.getItem('bomapp.scriptUrl') || DEFAULT_SCRIPT_URL,
   setScriptUrl: (v) => localStorage.setItem('bomapp.scriptUrl', v),
   getCreatedBy: () => localStorage.getItem('bomapp.createdBy') || '',
   setCreatedBy: (v) => localStorage.setItem('bomapp.createdBy', v),
+
+  // Codes added from the web that aren't in the bundled reference data yet.
+  // Kept locally so they survive a reload; also written to the sheet.
+  getLocalAdditions() {
+    try {
+      return Object.assign({}, EMPTY_ADDITIONS, JSON.parse(localStorage.getItem('bomapp.additions') || '{}'));
+    } catch (err) {
+      return Object.assign({}, EMPTY_ADDITIONS);
+    }
+  },
+  addLocal(kind, value) {
+    const all = Store.getLocalAdditions();
+    const list = all[kind];
+    if (!list) return;
+    const exists = kind === 'materials'
+      ? list.some((m) => m.CODE === value.CODE)
+      : list.includes(value);
+    if (!exists) {
+      list.push(value);
+      localStorage.setItem('bomapp.additions', JSON.stringify(all));
+    }
+  },
 };
 
 /* ================================ API ================================ */
@@ -44,14 +68,34 @@ const Api = {
     return res.json();
   },
   ping: () => Api.get('ping'),
-  bootstrap: () => Api.get('bootstrap'),
-  recipe: (item) => Api.get('recipe', { item }),
   orders: () => Api.get('orders'),
   saveOrder: (order) => Api.post('saveOrder', { order }),
   addPackagingCode: (code, description) => Api.post('addPackagingCode', { code, description }),
   addColorShade: (code, description) => Api.post('addColorShade', { code, description }),
   addMaterial: (material) => Api.post('addMaterial', { material }),
   addBaseItem: (name) => Api.post('addBaseItem', { name }),
+};
+
+/* ============================ Static data =============================
+ * Reference data (item list, materials, packaging/color codes, and the
+ * per-item recipes) ships with the site and is fetched from the same
+ * origin. Deliberately NOT read through Apps Script: that would make the
+ * app depend on the Web App deployment being re-published whenever the
+ * backend gains a new action — an easy step to miss, and it fails with an
+ * opaque "unknown action" error. Apps Script is used only for the write
+ * path (saving orders) and for reading back history.
+ * Regenerate these files with scripts/build_web_data.py.
+ */
+const StaticData = {
+  async json(path) {
+    const res = await fetch(path, { cache: 'no-cache' });
+    if (!res.ok) throw new Error(path + ' → HTTP ' + res.status);
+    return res.json();
+  },
+  meta: () => StaticData.json('data/meta.json'),
+  materials: () => StaticData.json('data/materials.json'),
+  recipeIndex: () => StaticData.json('data/recipes/index.json'),
+  recipe: (id) => StaticData.json('data/recipes/' + id + '.json'),
 };
 
 /* =============================== Toast ================================ */
@@ -207,6 +251,7 @@ class Combobox {
 
 const App = {
   data: { materials: [], baseItems: [], packagingCodes: [], colorShades: [] },
+  recipeIndex: {}, // item name -> recipe file id, from data/recipes/index.json
   lines: [], // current BOM lines being edited: {rowId, materialCode, materialName, dept, unit, qtyPerFg, stockQty, remarks}
   itemBuild: { baseModel: '', packaging: '', color: '' },
   rowSeq: 1,
@@ -241,6 +286,47 @@ function setStatus(state, text) {
   label.textContent = text;
 }
 
+/**
+ * Loads the bundled reference data. This is what makes the pickers and the
+ * recipe lookup work, and it is independent of Google Sheets — so the app
+ * is usable even if the Apps Script connection is down.
+ */
+async function loadStaticData() {
+  const [meta, materials, recipeIndex] = await Promise.all([
+    StaticData.meta(),
+    StaticData.materials(),
+    StaticData.recipeIndex(),
+  ]);
+
+  App.data.baseItems = meta.baseItems || [];
+  App.data.packagingCodes = meta.packagingCodes || [];
+  App.data.colorShades = meta.colorShades || [];
+  App.data.materials = materials || [];
+  App.recipeIndex = recipeIndex || {};
+
+  // Codes the user added from this browser are merged back in so they stay
+  // selectable after a reload (they are also written to the sheet).
+  const local = Store.getLocalAdditions();
+  local.baseItems.forEach((n) => {
+    if (!App.data.baseItems.includes(n)) App.data.baseItems.push(n);
+  });
+  local.packagingCodes.forEach((c) => {
+    if (!App.data.packagingCodes.some((r) => r.CODE === c)) App.data.packagingCodes.push({ CODE: c, DESCRIPTION: '' });
+  });
+  local.colorShades.forEach((c) => {
+    if (!App.data.colorShades.some((r) => r.CODE === c)) App.data.colorShades.push({ CODE: c, DESCRIPTION: '' });
+  });
+  local.materials.forEach((m) => {
+    if (!App.data.materials.some((r) => r.CODE === m.CODE)) App.data.materials.push(m);
+  });
+
+  refreshBaseModelItems();
+  refreshPackagingItems();
+  refreshColorItems();
+  refreshMaterialCatalogCache();
+}
+
+/** Checks the Apps Script link, which is only needed to save and to read history. */
 async function connect() {
   const url = Store.getScriptUrl();
   if (!url) {
@@ -253,26 +339,11 @@ async function connect() {
     if (!ping.ok) throw new Error('ping failed');
     setStatus('ok', 'เชื่อมต่อแล้ว');
     App.connected = true;
-    await loadBootstrap();
   } catch (err) {
-    setStatus('', 'เชื่อมต่อไม่สำเร็จ');
+    setStatus('', 'บันทึกไม่ได้ (ตรวจสอบการเชื่อมต่อ)');
     App.connected = false;
-    toast('เชื่อมต่อ Google Sheet ไม่สำเร็จ: ' + err.message, 'error');
+    toast('เชื่อมต่อ Google Sheet ไม่สำเร็จ: ' + err.message + ' — ยังกรอกข้อมูลได้ แต่จะบันทึกไม่ได้', 'error');
   }
-}
-
-async function loadBootstrap() {
-  const res = await Api.bootstrap();
-  if (!res.ok) { toast('โหลดข้อมูลไม่สำเร็จ: ' + res.error, 'error'); return; }
-  App.data.materials = res.materials || [];
-  App.data.baseItems = res.baseItems || [];
-  App.data.packagingCodes = res.packagingCodes || [];
-  App.data.colorShades = res.colorShades || [];
-
-  refreshBaseModelItems();
-  refreshPackagingItems();
-  refreshColorItems();
-  refreshMaterialCatalogCache();
 }
 
 /* --------------------------- Item code builder --------------------------- */
@@ -325,29 +396,35 @@ function currentItemCode() {
 }
 
 async function ensureLookupCreated(kind, code) {
-  try {
-    if (kind === 'packaging') {
-      await Api.addPackagingCode(code, '');
-      if (!App.data.packagingCodes.some((r) => r.CODE === code)) {
-        App.data.packagingCodes.push({ CODE: code, DESCRIPTION: '' });
-        refreshPackagingItems();
-      }
-    } else if (kind === 'color') {
-      await Api.addColorShade(code, '');
-      if (!App.data.colorShades.some((r) => r.CODE === code)) {
-        App.data.colorShades.push({ CODE: code, DESCRIPTION: '' });
-        refreshColorItems();
-      }
-    } else if (kind === 'baseModel') {
-      await Api.addBaseItem(code);
-      if (!App.data.baseItems.includes(code)) {
-        App.data.baseItems.push(code);
-        refreshBaseModelItems();
-      }
+  // Show it in the picker straight away and remember it locally, so a failed
+  // or slow round-trip to the sheet never blocks data entry.
+  if (kind === 'packaging') {
+    Store.addLocal('packagingCodes', code);
+    if (!App.data.packagingCodes.some((r) => r.CODE === code)) {
+      App.data.packagingCodes.push({ CODE: code, DESCRIPTION: '' });
+      refreshPackagingItems();
     }
+  } else if (kind === 'color') {
+    Store.addLocal('colorShades', code);
+    if (!App.data.colorShades.some((r) => r.CODE === code)) {
+      App.data.colorShades.push({ CODE: code, DESCRIPTION: '' });
+      refreshColorItems();
+    }
+  } else if (kind === 'baseModel') {
+    Store.addLocal('baseItems', code);
+    if (!App.data.baseItems.includes(code)) {
+      App.data.baseItems.push(code);
+      refreshBaseModelItems();
+    }
+  }
+
+  try {
+    if (kind === 'packaging') await Api.addPackagingCode(code, '');
+    else if (kind === 'color') await Api.addColorShade(code, '');
+    else if (kind === 'baseModel') await Api.addBaseItem(code);
     toast('เพิ่มรายการใหม่แล้ว: ' + code, 'success');
   } catch (err) {
-    toast('บันทึกรายการใหม่ไม่สำเร็จ: ' + err.message, 'error');
+    toast('เพิ่มในเครื่องแล้ว แต่บันทึกลงชีทไม่สำเร็จ: ' + err.message, 'error');
   }
 }
 
@@ -392,25 +469,39 @@ function initItemBuilder() {
   document.getElementById('loadRecipeBtn').addEventListener('click', loadRecipeFromMaster);
 }
 
+/**
+ * Resolves an item to its recipe file id, trying the full composed code
+ * first and then the base model — an item like "AT-01N-MOD-B(B)-A" is often
+ * a packaging/colour variant whose recipe is filed under "AT-01N-MOD-B".
+ */
+function resolveRecipeId(item) {
+  const candidates = [item, App.itemBuild.baseModel].filter(Boolean);
+  for (const key of candidates) {
+    if (Object.prototype.hasOwnProperty.call(App.recipeIndex, key)) {
+      return { id: App.recipeIndex[key], matched: key };
+    }
+  }
+  return null;
+}
+
 async function loadRecipeFromMaster() {
   const item = currentItemCode();
   const hint = document.getElementById('recipeHint');
   const btn = document.getElementById('loadRecipeBtn');
 
+  const found = resolveRecipeId(item);
+  if (!found) {
+    hint.textContent = 'ไม่พบสูตรวัตถุดิบเดิมสำหรับรหัสนี้ในระบบเก่า — เพิ่มรายการเองได้ด้านล่าง';
+    return;
+  }
+
   btn.disabled = true;
-  hint.textContent = 'กำลังค้นหาสูตรวัตถุดิบเดิม...';
+  hint.textContent = 'กำลังโหลดสูตรวัตถุดิบเดิม...';
   let rows;
   try {
-    let res = await Api.recipe(item);
-    if (!res.ok) throw new Error(res.error || 'unknown API error');
-    rows = res.rows;
-    if ((!rows || !rows.length) && App.itemBuild.baseModel && App.itemBuild.baseModel !== item) {
-      res = await Api.recipe(App.itemBuild.baseModel);
-      if (!res.ok) throw new Error(res.error || 'unknown API error');
-      rows = res.rows;
-    }
+    rows = await StaticData.recipe(found.id);
   } catch (err) {
-    hint.textContent = 'ค้นหาสูตรวัตถุดิบไม่สำเร็จ: ' + err.message;
+    hint.textContent = 'โหลดสูตรวัตถุดิบไม่สำเร็จ: ' + err.message;
     btn.disabled = false;
     return;
   }
@@ -429,13 +520,17 @@ async function loadRecipeFromMaster() {
       materialCode: r.CODE || '',
       materialName: r.NAME || '',
       dept: r.DEPT_MAKER || r.DEPT || '',
-      unit: r.CUT_UNIT || r.PIECES_UNIT || '',
+      // RB_COUNT_UNIT is the material's issuing unit — the legacy add_Item
+      // macro maps this column (BM) into the BOM sheet's unit column (AI).
+      unit: r.RB_COUNT_UNIT || r.CUT_UNIT || r.PIECES_UNIT || '',
       qtyPerFg: r.QTY_PER_SET || '',
       stockQty: '',
       remarks: '',
     });
   });
-  hint.textContent = `โหลดสูตรวัตถุดิบเดิมแล้ว ${rows.length} รายการ`;
+  hint.textContent = found.matched === item
+    ? `โหลดสูตรวัตถุดิบเดิมแล้ว ${rows.length} รายการ`
+    : `โหลดสูตรวัตถุดิบเดิมแล้ว ${rows.length} รายการ (จากรุ่น "${found.matched}")`;
   renderLines();
 }
 
@@ -503,11 +598,16 @@ function renderLines() {
           deptInput.value = line.dept;
           unitInput.value = line.unit;
         } else if (item.__created) {
+          const row = {
+            CODE: item.value, NAME: line.materialName, DEPT: line.dept,
+            UNIT: line.unit, USAGE_COUNT: 0,
+          };
+          Store.addLocal('materials', row);
+          App.data.materials.push(row);
+          materialCatalogItems.push({ value: item.value, label: item.value, sub: '', __row: row });
           Api.addMaterial({ code: item.value, name: line.materialName, dept: line.dept, unit: line.unit })
-            .then(() => {
-              materialCatalogItems.push({ value: item.value, label: item.value, sub: '', __row: { CODE: item.value } });
-              toast('เพิ่มรหัสวัตถุดิบใหม่แล้ว: ' + item.value, 'success');
-            }).catch((err) => toast('เพิ่มวัตถุดิบไม่สำเร็จ: ' + err.message, 'error'));
+            .then(() => toast('เพิ่มรหัสวัตถุดิบใหม่แล้ว: ' + item.value, 'success'))
+            .catch((err) => toast('เพิ่มในเครื่องแล้ว แต่บันทึกลงชีทไม่สำเร็จ: ' + err.message, 'error'));
         }
       },
     });
@@ -810,6 +910,12 @@ function init() {
   document.getElementById('historySearch').addEventListener('input', renderHistory);
 
   renderLines();
+
+  // Reference data and the Sheets connection are independent: the pickers
+  // must work even when Apps Script is unreachable.
+  loadStaticData().catch((err) => {
+    toast('โหลดข้อมูลอ้างอิงไม่สำเร็จ: ' + err.message, 'error');
+  });
   connect();
 }
 
