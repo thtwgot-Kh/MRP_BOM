@@ -287,6 +287,7 @@ document.addEventListener('click', (e) => {
 const App = {
   data: { materials: [], baseItems: [], packagingCodes: [], colorShades: [], customers: [] },
   recipeIndex: {}, // item name -> recipe file id, from data/recipes/index.json
+  recipeVariants: {}, // base model -> [{key, packaging, color}] built from recipeIndex
   items: [], // see makeItem()
   schedule: {}, // dept code -> {start, end}
   itemSeq: 1,
@@ -348,6 +349,7 @@ async function loadStaticData() {
   App.data.colorShades = meta.colorShades || [];
   App.data.materials = materials || [];
   App.recipeIndex = recipeIndex || {};
+  buildRecipeVariants();
 
   // Codes the user added from this browser are merged back in so they stay
   // selectable after a reload (they are also written to the sheet).
@@ -1057,19 +1059,73 @@ function recalcItem(it) {
 
 /* -------------------- Recipe loading (all items at once) ----------------- */
 
+const ITEM_CODE_RE = /^(.*)\((\w+)\)-(.+)$/;
+
+/** Splits "EL-Corte-GB-21(B)-Y" into base / packaging / colour. */
+function parseItemCode(code) {
+  const m = ITEM_CODE_RE.exec(code || '');
+  return m ? { base: m[1], packaging: m[2], color: m[3] } : null;
+}
+
 /**
- * Resolves an item to its recipe file id, trying the full composed code
- * first and then the base model — an item like "AT-01N-MOD-B(B)-A" is often
- * a packaging/colour variant whose recipe is filed under "AT-01N-MOD-B".
+ * Groups every legacy recipe key by its base model, so an item can fall
+ * back to another variant of the same product. Needed because most legacy
+ * items are only filed under a full "base(packaging)-colour" code — there
+ * is no bare-base-model entry to fall back to (221 of the 1,374 selectable
+ * base models have none).
+ */
+function buildRecipeVariants() {
+  const out = {};
+  Object.keys(App.recipeIndex).forEach((key) => {
+    const parts = parseItemCode(key);
+    if (!parts) return;
+    (out[parts.base] = out[parts.base] || []).push({ key, packaging: parts.packaging, color: parts.color });
+  });
+  Object.values(out).forEach((list) => list.sort((a, b) => a.key.localeCompare(b.key)));
+  App.recipeVariants = out;
+}
+
+/**
+ * Finds the closest legacy recipe for an item, widening the search in
+ * steps and reporting how close the hit was so the UI can warn when the
+ * recipe came from a different variant:
+ *
+ *   exact   the item code itself
+ *   base    the bare base model
+ *   variant same base model + same packaging, different colour set
+ *   loose   same base model, any packaging/colour
+ *
+ * Colour variants of one product share most of their materials but not
+ * all (typically 10-16 of 15-22 codes), so anything past `base` is a
+ * starting point to review, not an answer.
  */
 function resolveRecipeId(it) {
-  const candidates = [itemCode(it), it.baseModel].filter(Boolean);
-  for (const key of candidates) {
-    if (Object.prototype.hasOwnProperty.call(App.recipeIndex, key)) {
-      return { id: App.recipeIndex[key], matched: key };
-    }
+  const code = itemCode(it);
+  const parsed = parseItemCode(code);
+  const base = it.baseModel || (parsed && parsed.base) || '';
+  const packaging = it.packaging || (parsed && parsed.packaging) || '';
+
+  const has = (key) => key && Object.prototype.hasOwnProperty.call(App.recipeIndex, key);
+  if (has(code)) return { id: App.recipeIndex[code], matched: code, kind: 'exact' };
+  if (has(base)) return { id: App.recipeIndex[base], matched: base, kind: 'base' };
+
+  const variants = App.recipeVariants[base] || [];
+  const samePackaging = packaging ? variants.filter((v) => v.packaging === packaging) : [];
+  const pick = samePackaging[0] || variants[0];
+  if (pick) {
+    return {
+      id: App.recipeIndex[pick.key],
+      matched: pick.key,
+      kind: samePackaging.length ? 'variant' : 'loose',
+    };
   }
   return null;
+}
+
+function recipeSourceNote(found, code, count) {
+  if (found.matched === code) return `โหลดสูตรเดิมแล้ว ${count} รายการ`;
+  if (found.kind === 'base') return `โหลดสูตรเดิมแล้ว ${count} รายการ (จากรุ่น "${found.matched}")`;
+  return `โหลดสูตรเดิมแล้ว ${count} รายการ — ดึงจาก "${found.matched}" ซึ่งเป็นคนละเฉดสี ⚠ ตรวจวัตถุดิบที่ขึ้นกับสีก่อนบันทึก`;
 }
 
 function setItemHint(it, text) {
@@ -1113,9 +1169,16 @@ async function loadRecipeForItem(it) {
 
   it.lines = [];
   rows.forEach((r) => {
+    // Every legacy recipe opens with a row for the finished good itself,
+    // carrying the source item's own code. When the recipe was borrowed
+    // from another variant, that row would otherwise save the wrong item
+    // code against this order, so point it at the item being made.
+    const isFinishedGoodRow = r.CODE && r.CODE === found.matched;
     addLine(it, {
-      materialCode: r.CODE || '',
-      materialName: r.NAME || '',
+      materialCode: isFinishedGoodRow ? code : (r.CODE || ''),
+      materialName: isFinishedGoodRow
+        ? String(r.NAME || '').split(found.matched).join(code)
+        : (r.NAME || ''),
       dept: r.DEPT_MAKER || r.DEPT || '',
       // RB_COUNT_UNIT is the material's issuing unit — the legacy add_Item
       // macro maps this column (BM) into the BOM sheet's unit column (AI).
@@ -1125,9 +1188,7 @@ async function loadRecipeForItem(it) {
       remarks: '',
     });
   });
-  setItemHint(it, found.matched === code
-    ? `โหลดสูตรเดิมแล้ว ${rows.length} รายการ`
-    : `โหลดสูตรเดิมแล้ว ${rows.length} รายการ (จากรุ่น "${found.matched}")`);
+  setItemHint(it, recipeSourceNote(found, code, rows.length));
   renderItemLines(it);
   return 'loaded';
 }
