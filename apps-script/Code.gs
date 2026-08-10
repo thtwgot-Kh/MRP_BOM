@@ -15,6 +15,14 @@
 // if the repo's default branch ever changes.
 var RAW_BASE_URL = 'https://raw.githubusercontent.com/thtwgot-Kh/MRP_BOM/claude/bom-data-entry-website-w8av10/data/';
 
+// Reported by action=ping so you can tell, from a browser, which snapshot a
+// Web App deployment is actually serving. A deployment is pinned to the
+// version it was published with — editing Code.gs does NOT change what
+// /exec runs until you publish a *new version* of that deployment — and
+// without this marker a stale deployment is invisible until a save fails.
+// Bump this whenever the request/response contract changes.
+var BACKEND_VERSION = '2-multi-item';
+
 var SHEETS = {
   BOM_MASTER: 'BOM_Master',
   MATERIALS: 'Materials_Catalog',
@@ -203,7 +211,7 @@ function doGet(e) {
   try {
     switch (action) {
       case 'ping':
-        return jsonOut_({ ok: true, time: new Date().toISOString() });
+        return jsonOut_({ ok: true, version: BACKEND_VERSION, time: new Date().toISOString() });
       case 'bootstrap':
         // BOM_Master is intentionally excluded here (tens of thousands of
         // rows) — use action=recipe to look up one item's recipe on demand.
