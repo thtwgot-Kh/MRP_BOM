@@ -293,6 +293,7 @@ const App = {
   rowSeq: 1,
   connected: false,
   backendVersion: 'unknown', // 'current' | 'outdated' | 'unknown'
+  backendTag: '', // version string reported by the deployed Apps Script
 };
 
 DEPARTMENTS.forEach((d) => { App.schedule[d] = { start: '', end: '' }; });
@@ -412,7 +413,9 @@ const BACKEND_STATUS_TEXT = {
 function renderBackendStatus() {
   document.getElementById('backendWarning').hidden = App.backendVersion !== 'outdated';
   const el = document.getElementById('backendStatus');
-  if (el) el.textContent = BACKEND_STATUS_TEXT[App.backendVersion] || BACKEND_STATUS_TEXT.unknown;
+  if (!el) return;
+  const tag = App.backendTag ? ` [${App.backendTag}]` : '';
+  el.textContent = (BACKEND_STATUS_TEXT[App.backendVersion] || BACKEND_STATUS_TEXT.unknown) + tag;
 }
 
 /**
@@ -444,6 +447,9 @@ async function connect() {
   try {
     const ping = await Api.ping();
     if (!ping.ok) throw new Error('ping failed');
+    // Only the multi-item backend reports a version; a deployment serving
+    // an older snapshot simply omits it.
+    App.backendTag = ping.version || '';
     setStatus('ok', 'เชื่อมต่อแล้ว');
     App.connected = true;
     probeBackend();
@@ -451,6 +457,7 @@ async function connect() {
     setStatus('', 'บันทึกไม่ได้ (ตรวจสอบการเชื่อมต่อ)');
     App.connected = false;
     App.backendVersion = 'unknown';
+    App.backendTag = '';
     renderBackendStatus();
     toast('เชื่อมต่อ Google Sheet ไม่สำเร็จ: ' + err.message + ' — ยังกรอกข้อมูลได้ แต่จะบันทึกไม่ได้', 'error');
   }
