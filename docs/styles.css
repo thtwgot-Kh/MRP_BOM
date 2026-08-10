@@ -120,6 +120,31 @@ html, body {
   margin-bottom: 16px;
 }
 
+.alert {
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 14px 16px;
+  margin-bottom: 16px;
+  font-size: 13.5px;
+  line-height: 1.7;
+}
+.alert[hidden] { display: none; }
+.alert code {
+  background: rgba(127, 127, 127, .16);
+  border-radius: 4px;
+  padding: 1px 5px;
+  font-size: 12.5px;
+}
+.alert-warn {
+  background: #fff8e6;
+  border-color: #f0c36d;
+  color: #6b4c07;
+}
+@media (prefers-color-scheme: dark) {
+  .alert-warn { background: #3a2f14; border-color: #7a5f1f; color: #f5d98a; }
+}
+.backend-status { margin: 12px 0 0; }
+
 .card-title { font-size: 16px; font-weight: 700; margin: 0 0 4px; }
 .card-title-row { display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px; }
 .card-title-row .card-title { margin: 0; }

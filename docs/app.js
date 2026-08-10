@@ -7,7 +7,16 @@
  * redeployed under a new URL.
  */
 
-const DEFAULT_SCRIPT_URL = 'https://script.google.com/macros/s/AKfycbwQdBaq0FAH7C6Uj7r7LHL1VCuqLQxqaU1IMHKRLrtFU7EDMl9---Bf5ukckOhbL7RRsA/exec';
+const DEFAULT_SCRIPT_URL = 'https://script.google.com/macros/s/AKfycbwAzU9wBuMdkF2SEhlvHvqLjbPm--y1CUUP1Q8VD5_Cu8b2na0JxKMqL5Kt9788zDNVsA/exec';
+
+// Deployments that have been replaced. Publishing a *new* deployment (rather
+// than a new version of the existing one) mints a new /exec URL and leaves
+// the old one serving the old code, so anything still pointing at one of
+// these is silently talking to a stale backend. A browser that saved one in
+// settings is moved back onto the current default instead.
+const RETIRED_SCRIPT_URLS = [
+  'https://script.google.com/macros/s/AKfycbwQdBaq0FAH7C6Uj7r7LHL1VCuqLQxqaU1IMHKRLrtFU7EDMl9---Bf5ukckOhbL7RRsA/exec',
+];
 
 /** Production departments an order is scheduled through, in flow order. */
 const DEPARTMENTS = ['RB', 'GR', 'PT', 'BG', 'PK', 'ST'];
@@ -15,7 +24,11 @@ const DEPARTMENTS = ['RB', 'GR', 'PT', 'BG', 'PK', 'ST'];
 const EMPTY_ADDITIONS = { baseItems: [], packagingCodes: [], colorShades: [], materials: [], customers: [] };
 
 const Store = {
-  getScriptUrl: () => localStorage.getItem('bomapp.scriptUrl') || DEFAULT_SCRIPT_URL,
+  getScriptUrl() {
+    const saved = localStorage.getItem('bomapp.scriptUrl');
+    if (!saved || RETIRED_SCRIPT_URLS.includes(saved)) return DEFAULT_SCRIPT_URL;
+    return saved;
+  },
   setScriptUrl: (v) => localStorage.setItem('bomapp.scriptUrl', v),
   getCreatedBy: () => localStorage.getItem('bomapp.createdBy') || '',
   setCreatedBy: (v) => localStorage.setItem('bomapp.createdBy', v),
@@ -279,6 +292,7 @@ const App = {
   itemSeq: 1,
   rowSeq: 1,
   connected: false,
+  backendVersion: 'unknown', // 'current' | 'outdated' | 'unknown'
 };
 
 DEPARTMENTS.forEach((d) => { App.schedule[d] = { start: '', end: '' }; });
@@ -357,21 +371,61 @@ async function loadStaticData() {
 }
 
 /**
- * The customer list has no static source file — it is whatever has been
- * used on previous orders, so it is read back from the sheet (plus any
- * name typed in this browser). Failing to reach the sheet must not break
- * the picker: it stays a free-text combobox either way.
+ * Fetches the customer list and, in the same round-trip, tells us which
+ * version of the Apps Script backend is actually deployed.
+ *
+ * `customers` only exists in the multi-item backend, so an "unknown
+ * action" reply means the sheet is still running the pre-multi-item code.
+ * That code rejects every save from this page (it looks for a single
+ * `order.item`), and the raw error it returns is unreadable — so detect it
+ * up front and say what to do about it.
+ *
+ * The customer list itself has no static source file: it is whatever has
+ * been used on previous orders, plus any name typed in this browser.
+ * Failing to reach the sheet must not break the picker — it stays a
+ * free-text combobox either way.
  */
-async function loadCustomers() {
+async function probeBackend() {
   try {
     const res = await Api.customers();
     if (res && res.ok && Array.isArray(res.customers)) {
+      App.backendVersion = 'current';
       res.customers.forEach(mergeCustomer);
       refreshCustomerItems();
+    } else if (res && res.ok === false && /unknown action/i.test(String(res.error || ''))) {
+      App.backendVersion = 'outdated';
+    } else {
+      App.backendVersion = 'unknown';
     }
   } catch (err) {
-    /* offline or an Apps Script deployment without the action — ignore */
+    App.backendVersion = 'unknown';
   }
+  renderBackendStatus();
+}
+
+const BACKEND_STATUS_TEXT = {
+  current: 'เวอร์ชันล่าสุด (รองรับหลาย Item) ✓',
+  outdated: 'เวอร์ชันเก่า — ต้องวางโค้ด Code.gs ล่าสุดแล้ว Deploy → Manage deployments → Version: New version',
+  unknown: 'ตรวจสอบไม่ได้ (เชื่อมต่อไม่สำเร็จ)',
+};
+
+function renderBackendStatus() {
+  document.getElementById('backendWarning').hidden = App.backendVersion !== 'outdated';
+  const el = document.getElementById('backendStatus');
+  if (el) el.textContent = BACKEND_STATUS_TEXT[App.backendVersion] || BACKEND_STATUS_TEXT.unknown;
+}
+
+/**
+ * `missing order.item` (singular) can only come from the pre-multi-item
+ * backend — the current one says `missing order.items`.
+ */
+function friendlySaveError(msg) {
+  if (/missing order\.item\b/.test(msg)) {
+    App.backendVersion = 'outdated';
+    renderBackendStatus();
+    return 'Apps Script ที่เชื่อมอยู่ยังเป็นโค้ดเวอร์ชันเก่า — ดูวิธีแก้ในกรอบสีเหลืองด้านบนสุดของหน้านี้';
+  }
+  return msg;
 }
 
 function mergeCustomer(name) {
@@ -392,10 +446,12 @@ async function connect() {
     if (!ping.ok) throw new Error('ping failed');
     setStatus('ok', 'เชื่อมต่อแล้ว');
     App.connected = true;
-    loadCustomers();
+    probeBackend();
   } catch (err) {
     setStatus('', 'บันทึกไม่ได้ (ตรวจสอบการเชื่อมต่อ)');
     App.connected = false;
+    App.backendVersion = 'unknown';
+    renderBackendStatus();
     toast('เชื่อมต่อ Google Sheet ไม่สำเร็จ: ' + err.message + ' — ยังกรอกข้อมูลได้ แต่จะบันทึกไม่ได้', 'error');
   }
 }
@@ -1247,9 +1303,10 @@ async function saveOrder() {
     toast('บันทึก BOM ลง Google Sheet สำเร็จ', 'success');
     resetForm();
   } catch (err) {
-    msgEl.textContent = 'บันทึกไม่สำเร็จ: ' + err.message;
+    const detail = friendlySaveError(err.message);
+    msgEl.textContent = 'บันทึกไม่สำเร็จ: ' + detail;
     msgEl.className = 'save-bar-msg is-error';
-    toast('บันทึกไม่สำเร็จ: ' + err.message, 'error');
+    toast('บันทึกไม่สำเร็จ: ' + detail, 'error');
   } finally {
     btn.disabled = false;
   }

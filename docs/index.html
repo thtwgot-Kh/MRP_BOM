@@ -35,6 +35,13 @@
     <!-- ===== NEW BOM VIEW ===== -->
     <section id="view-new" class="view is-active">
 
+      <div class="alert alert-warn" id="backendWarning" hidden>
+        <strong>Apps Script ที่เชื่อมอยู่ยังเป็นโค้ดเวอร์ชันเก่า</strong> — กรอกและคำนวณได้ตามปกติ แต่ <b>กดบันทึกจะไม่สำเร็จ</b>
+        (โค้ดเก่ารับได้ทีละ 1 Item จึงตอบกลับว่า <code>missing order.item</code>)
+        <br />วิธีแก้: เปิดชีท → ส่วนขยาย → Apps Script → วางโค้ด <code>apps-script/Code.gs</code> ล่าสุด → บันทึก →
+        รัน <code>initializeSheet</code> หนึ่งครั้ง → <b>Deploy → Manage deployments → ไอคอนดินสอ → Version: <u>New version</u> → Deploy</b>
+      </div>
+
       <div class="card">
         <h2 class="card-title">1. ข้อมูลคำสั่งผลิต</h2>
         <p class="card-hint">จำนวนที่สั่งย้ายไปกรอกรายตัวสินค้าในหัวข้อ 3 แล้ว (หนึ่งคำสั่งผลิตสั่งได้หลาย Item)</p>
@@ -171,6 +178,7 @@
         </div>
         <button class="btn btn-primary" id="saveUrlBtn">บันทึกและเชื่อมต่อ</button>
         <span class="hint-inline" id="settingsHint"></span>
+        <p class="card-hint backend-status">เวอร์ชันโค้ด Apps Script ที่ตรวจพบ: <span id="backendStatus">กำลังตรวจสอบ...</span></p>
       </div>
       <div class="card">
         <h2 class="card-title">ผู้บันทึก</h2>
